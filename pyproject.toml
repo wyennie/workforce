@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workforce"
+version = "0.1.0.dev0"
+description = "A persistent roster of Claude specialists, dispatchable on tickets across your projects."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Will Ryennie" }]
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+    "typer>=0.12",
+    "pydantic>=2.6",
+    "rich>=13.7",
+    "tomli_w>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+workforce = "workforce.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/workforce", "tests"]
