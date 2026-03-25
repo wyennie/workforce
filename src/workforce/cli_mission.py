@@ -23,8 +23,20 @@ from claude_agent_sdk import (
 from rich.panel import Panel
 from rich.table import Table
 
-from workforce import mission, output, paths, project as project_mod
+from workforce import mission, output, paths, parallel, project as project_mod
+from workforce.manager import (
+    Decomposition,
+    DecompositionKind,
+    ManagerError,
+    ValidationError,
+)
 from workforce.mission import MissionMeta, MissionStatus
+from workforce.parallel import (
+    ParallelMissionMeta,
+    ParallelStatus,
+    ResolutionError,
+    merge_plan,
+)
 from workforce.runner import RunLimits
 from workforce.specialist import RosterStore
 from workforce.worktree import WorktreeManager
@@ -131,10 +143,19 @@ def dispatch_command(
     specialist: str | None = typer.Option(
         None, "--specialist", help="Override automatic specialist selection."
     ),
+    parallel_flag: bool = typer.Option(
+        False,
+        "--parallel",
+        help="Run a Manager pass first, decompose into sub-tasks, dispatch in parallel worktrees.",
+    ),
     max_turns: int = typer.Option(50, "--max-turns", help="Hard cap on assistant turns."),
     max_cost: float = typer.Option(5.0, "--max-cost", help="Hard cap on total cost (USD)."),
     max_wall: float = typer.Option(
         1800.0, "--max-wall", help="Hard cap on wall-clock seconds."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Skip the decomposition confirmation prompt (parallel mode only).",
     ),
 ) -> None:
     """Dispatch a mission: pick a specialist, run them in a fresh worktree."""
@@ -151,6 +172,22 @@ def dispatch_command(
             "Did you move the repo?"
         )
 
+    limits = RunLimits(
+        max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall
+    )
+
+    if parallel_flag:
+        if specialist is not None:
+            output.warn(
+                "--specialist is ignored in --parallel mode; the Manager picks "
+                "specialists per task. Pass it as --fallback if needed."
+            )
+        _dispatch_parallel(
+            proj, ticket, roster_store, project_store, worktree_manager,
+            limits=limits, fallback=specialist, skip_confirm=yes,
+        )
+        return
+
     specialist_name = _resolve_specialist(proj, roster_store, specialist)
     spec = roster_store.load(specialist_name)
 
@@ -159,10 +196,6 @@ def dispatch_command(
         f"[italic]{_truncate(ticket, 80)}[/italic]"
     )
     output.rule()
-
-    limits = RunLimits(
-        max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall
-    )
 
     try:
         meta = asyncio.run(
@@ -186,6 +219,201 @@ def dispatch_command(
 
     if meta.status is not MissionStatus.COMPLETED:
         raise typer.Exit(code=1)
+
+
+# ----- parallel dispatch -----------------------------------------------------
+
+
+def _dispatch_parallel(
+    proj: project_mod.Project,
+    ticket: str,
+    roster_store: RosterStore,
+    project_store: project_mod.ProjectStore,
+    worktree_manager: WorktreeManager,
+    *,
+    limits: RunLimits,
+    fallback: str | None,
+    skip_confirm: bool,
+) -> None:
+    if not proj.assigned_specialists:
+        output.die(
+            f"no specialists assigned to project {proj.name!r}. "
+            f"Run `workforce project assign {proj.name} <specialist>` first."
+        )
+
+    output.info(
+        f"[bold]parallel dispatch[/bold] on {proj.name}: "
+        f"[italic]{_truncate(ticket, 80)}[/italic]"
+    )
+    output.info("[dim]running Manager to decompose the ticket...[/dim]")
+
+    confirm_cb: parallel.ConfirmCallback | None
+    if skip_confirm:
+        confirm_cb = lambda _d, _r: True  # noqa: E731
+    else:
+        confirm_cb = _confirm_decomposition
+
+    try:
+        result = asyncio.run(
+            parallel.dispatch_parallel(
+                project=proj,
+                ticket=ticket,
+                roster_store=roster_store,
+                project_store=project_store,
+                worktree_manager=worktree_manager,
+                sub_mission_limits=limits,
+                make_sub_callback=_make_sub_renderer,
+                fallback_specialist=fallback,
+                confirm=confirm_cb,
+            )
+        )
+    except KeyboardInterrupt:
+        output.warn("interrupted")
+        raise typer.Exit(code=130)
+    except (ManagerError, ValidationError, ResolutionError) as e:
+        output.die(str(e))
+
+    output.rule()
+    _print_parallel_summary(result.parent_meta, result.sub_metas)
+    _print_merge_plan(result.parent_meta, result.sub_metas)
+
+    if result.parent_meta.status is not ParallelStatus.COMPLETED:
+        raise typer.Exit(code=1)
+
+
+def _confirm_decomposition(
+    decomp: Decomposition,
+    resolved: list[tuple[str, str]],
+) -> bool:
+    """Print the decomposition and ask for y/N confirmation."""
+    output.rule("decomposition")
+    output.info(f"[bold]kind:[/bold] {decomp.kind.value}    [dim]{decomp.rationale}[/dim]")
+    if decomp.contract.needed:
+        output.info(f"[bold]contract:[/bold] {decomp.contract.path}")
+        output.info(f"[dim]{_truncate(decomp.contract.body, 200)}[/dim]")
+
+    by_task = dict(resolved)
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("task")
+    table.add_column("specialist")
+    table.add_column("owns", overflow="fold")
+    table.add_column("depends_on")
+    table.add_column("turns", justify="right")
+    table.add_column("description", overflow="fold")
+    for t in decomp.tasks:
+        owns = ", ".join(t.owns_paths) if t.owns_paths else "[dim]-[/dim]"
+        if t.excludes_paths:
+            owns += " [dim](excl: " + ", ".join(t.excludes_paths) + ")[/dim]"
+        deps = ", ".join(t.depends_on) if t.depends_on else "[dim]-[/dim]"
+        table.add_row(
+            t.id,
+            by_task.get(t.id, "[red]?[/red]"),
+            owns,
+            deps,
+            str(t.estimated_turns),
+            _truncate(t.description, 80),
+        )
+    output.print_table(table)
+    if decomp.merge_order:
+        output.info(f"[dim]merge order: {' → '.join(decomp.merge_order)}[/dim]")
+    output.rule()
+    return typer.confirm("Proceed with this decomposition?", default=True)
+
+
+def _make_sub_renderer(task_id: str) -> "Any":
+    """Per-sub-mission renderer that prefixes lines with [task_id]."""
+    base = _make_renderer()
+    prefix = f"\\[[bold cyan]{task_id}[/bold cyan]] "
+
+    def render(msg: Any) -> None:
+        # Print prefix then delegate. Prefix is dim so the eye can group lines.
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    text = block.text.rstrip()
+                    if text:
+                        for line in text.splitlines():
+                            output.info(f"{prefix}{line}")
+                elif isinstance(block, ToolUseBlock):
+                    args_preview = _truncate(_summarize_tool_args(block.name, block.input), 70)
+                    output.info(f"{prefix}[dim]→ {block.name}({args_preview})[/dim]")
+        elif isinstance(msg, UserMessage):
+            if isinstance(msg.content, list):
+                for block in msg.content:
+                    if isinstance(block, ToolResultBlock) and block.is_error:
+                        preview = _truncate(repr(block.content), 100)
+                        output.warn(f"{prefix}  ← tool error: {preview}")
+        elif isinstance(msg, ResultMessage):
+            output.info(
+                f"{prefix}[dim]turns={msg.num_turns} duration={msg.duration_ms}ms "
+                f"cost=${(msg.total_cost_usd or 0):.4f}[/dim]"
+            )
+
+    return render
+
+
+_PARALLEL_STATUS_STYLES = {
+    ParallelStatus.PLANNED: "[dim]planned[/dim]",
+    ParallelStatus.DISPATCHED: "[yellow]dispatched[/yellow]",
+    ParallelStatus.COMPLETED: "[green]completed[/green]",
+    ParallelStatus.PARTIAL: "[yellow]partial[/yellow]",
+    ParallelStatus.FAILED: "[red]failed[/red]",
+    ParallelStatus.CANCELLED: "[dim]cancelled[/dim]",
+}
+
+
+def _print_parallel_summary(parent: ParallelMissionMeta, subs: list[MissionMeta]) -> None:
+    output.info(
+        f"parent mission {parent.parent_mission_id}: "
+        f"{_PARALLEL_STATUS_STYLES[parent.status]}"
+    )
+    output.info(f"  manager cost: ${parent.manager_cost_usd:.4f}")
+    if not subs:
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("task")
+    table.add_column("specialist")
+    table.add_column("status")
+    table.add_column("cost", justify="right")
+    table.add_column("turns", justify="right")
+    table.add_column("commits", justify="right")
+    table.add_column("branch", overflow="fold")
+
+    sub_by_id = {m.mission_id: m for m in subs}
+    total_cost = parent.manager_cost_usd
+    for ref in parent.sub_missions:
+        m = sub_by_id.get(ref.mission_id)
+        if m is None:
+            continue
+        total_cost += m.cost_usd
+        table.add_row(
+            ref.task_id,
+            m.specialist,
+            _STATUS_STYLES[m.status],
+            f"${m.cost_usd:.4f}",
+            str(m.turn_count),
+            str(len(m.commits)),
+            m.branch,
+        )
+    output.print_table(table)
+    output.info(f"  total cost: ${total_cost:.4f}")
+
+
+def _print_merge_plan(parent: ParallelMissionMeta, subs: list[MissionMeta]) -> None:
+    plan = merge_plan(parent, subs)
+    if not plan:
+        return
+    output.rule("merge plan")
+    completed = [s for s in plan if s.status is MissionStatus.COMPLETED]
+    failed = [s for s in plan if s.status is not MissionStatus.COMPLETED]
+    if completed:
+        output.info("Run on the source repo, in this order:")
+        for step in completed:
+            output.info(f"  git merge --no-ff {step.branch}    [dim]# {step.task_id}[/dim]")
+    if failed:
+        output.warn("Skipped (sub-mission did not complete cleanly):")
+        for step in failed:
+            output.warn(f"  {step.branch}  [dim]({step.status})[/dim]")
 
 
 def _print_summary(meta: mission.MissionMeta) -> None:

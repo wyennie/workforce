@@ -263,3 +263,60 @@ Walked the brief's Definition of Done on a fresh scratch repo. All criteria met.
 
 ### Cost data point (real)
 22-turn ticket (read 4 files, write 3, edit 1, run 5 bash commands, commit) on Sonnet 4.6: $0.21. Memory delta follow-up call: $0.02. Total $0.23. Default `max_budget_usd=5.00` has comfortable headroom for tickets ~10x this size.
+
+---
+
+## v0.2 — Parallel dispatch with Manager (2026-05-02)
+
+The wedge product feature: one ticket fanned out across multiple specialists working concurrently in their own worktrees, with a Manager doing contract-first decomposition. Reviewer deferred to v0.3 — parallelism is the value, the Reviewer is the quality gate.
+
+### Manager is a built-in role, not a hireable specialist
+Hiring a Manager would be an extra setup step for the user and add a "you forgot to hire one" footgun. The Manager is invoked implicitly when `--parallel` is used. Default model `claude-sonnet-4-6` (planning needs the smarter model; Haiku would skimp on contract quality). Allowed tools: `Read, Glob, Grep` only — read-only by construction. No memory or stats yet (would be useful future addition: "manager learned that this project's auth module is hard to parallelize").
+
+### Decomposition kind: parallel | sequential | single
+The Manager's first decision is which kind. `single` is the **graceful fallback**: when the ticket genuinely doesn't slice well, force-decomposing produces merge headaches worse than just running one specialist. The Manager's prompt rewards picking `single` honestly over bluffing `parallel`.
+
+### Contract-first as the parallelism enabler
+For a ticket like "refactor the auth module", the Manager produces a contract (typed signatures, behavior, edge cases) FIRST, then fans out impl/tests/callers/docs against that contract. Each specialist works against the same fixed API, in disjoint files. Without a crisp contract, parallelism is just N specialists guessing at the same API in their own way — and merging will be a nightmare.
+
+The contract is materialized once at `<parent-mission>/contract/contract.md` and injected into each sub-mission's user prompt as an `<extra_context>` block. Inline beats file-based for first cut: the contract is short, model treats inline content as authoritative, no re-read latency.
+
+### Filesystem-grounded path overlap detection
+For each pair of parallel tasks (no transitive dependency between them), resolve `owns_paths - excludes_paths` against the actual repo. If their concrete file sets intersect, validator refuses the decomposition. **Documented limitation**: tasks that create entirely-new files won't overlap (the files don't exist yet at validation time). Common case (refactoring existing files) IS caught. Symbolic glob-overlap analysis is hard and not worth it for v0.2.
+
+### DAG check via Kahn's algorithm
+`depends_on` builds a graph; topological sort raises `ValidationError` on cycle. Plus a separate check that `merge_order` covers every task and respects the dependency order. Two checks because they catch different bugs.
+
+### Sub-mission ID format: `<parent-id>__<task-id>`
+Flat alongside the parent in `missions/`, NOT nested. Reuses `_find_mission` and `mission show` / `replay` machinery as-is for sub-missions. Sorts naturally. Slight loss of visual hierarchy in `missions <project>` output; acceptable for v0.2.
+
+### Per-task callback factory for live UI
+The CLI registers a `make_sub_callback: (task_id) -> EventCallback` factory rather than a single shared callback. Each sub-mission gets its own renderer that prefixes lines with `[task_id]`. Three streams interleave on stdout but the prefix lets the eye group them. Future: rich `Live` panels per task — meaningful for >3 parallel specialists.
+
+### `mission.dispatch` gained `extra_context: str | None`
+Single new param threaded through to `compose_user_prompt` as an `<extra_context>` XML block between the ticket and success criteria. Used by the parallel orchestrator to inject the contract; could also be used by future features (e.g., shared "what we learned" notes from earlier sub-missions).
+
+### Specialist resolution: suggested → fallback → error
+Manager's `suggested_specialist` wins if assigned to the project. If the suggestion is unassigned (or absent), fall back to a CLI-provided fallback. If only one specialist is assigned, use them. Otherwise refuse with a clear error. No router; explicit choice.
+
+### Confirmation UX
+By default print decomposition table + ask y/N. `--yes` skips. No `--edit` flag yet (would open `$EDITOR` on `decomposition.json` pre-confirm); add when the prompt isn't crisp enough that users want to tweak.
+
+### Failure handling: each sub-mission is independent
+If one sub-mission errors/times-out, the others still complete. Parent meta status: `completed` (all green) | `partial` (mix) | `failed` (all red) | `cancelled` (user said no). Merge plan shows successful branches with `git merge --no-ff` lines and lists the failed ones separately. No auto-rollback; user decides what to keep.
+
+### v0.2 e2e cost data
+"Add string_utils with kebab/snake-case + tests + README mention", parallel into 3 sub-missions:
+- Manager: $0.097 (decomposed cleanly with a good contract)
+- impl (aria, 8 turns): $0.107
+- tests (ben, 11 turns): $0.148
+- docs (casey, 7 turns): $0.091
+- **Total: $0.44**, with 3 disjoint commits, **zero merge conflicts** when running the printed merge plan.
+
+Cheaper than I expected. The contract pays for itself: each specialist worked against a fixed target so they didn't waste turns on exploration.
+
+### v0.2 e2e findings
+1. **Manager assigned wrong specialist to wrong template** (ben/frontend got `tests`, casey/tester got `docs`). Cosmetic — work was correct. Manager prompt could read template descriptions from the roster to make smarter suggestions. Easy v0.3 follow-up.
+2. **Same `/root/repo/...` initial misfires** as v0.1. Each parallel specialist hit it once, wasting 1-2 turns. Worth fixing globally (prepend cwd to user prompt).
+3. **Single-commit-per-task** in all three subs. For tightly-scoped subtasks this is fine — the warning we have for `<2 commits` is more relevant for the parent ticket than for each subtask. Could suppress the warning in parallel mode.
+4. **Live output got busy** with 3 streams. Readable but noisy. Worth doing rich `Live` panels per task in a future iteration.

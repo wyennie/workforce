@@ -147,8 +147,22 @@ def compose_system_prompt(
     return "\n\n".join(parts) + "\n"
 
 
-def compose_user_prompt(ticket: str) -> str:
-    return f"## Ticket\n\n{ticket.strip()}\n\n{SUCCESS_CRITERIA}"
+def compose_user_prompt(ticket: str, *, extra_context: str | None = None) -> str:
+    """User prompt = ticket + (optional extra context block) + success criteria.
+
+    `extra_context` is for orchestration-level material the specialist should
+    treat as authoritative (e.g. an API contract from the parallel Manager).
+    Wrapped in an XML tag so the model treats it as inline data, not prose.
+    """
+    parts = [f"## Ticket\n\n{ticket.strip()}"]
+    if extra_context and extra_context.strip():
+        parts.append(
+            "<extra_context>\n"
+            + extra_context.strip()
+            + "\n</extra_context>"
+        )
+    parts.append(SUCCESS_CRITERIA)
+    return "\n\n".join(parts)
 
 
 # ----- Memory delta extraction ----------------------------------------------
@@ -375,6 +389,7 @@ async def dispatch(
     limits: RunLimits | None = None,
     on_message: EventCallback | None = None,
     mission_id: str | None = None,
+    extra_context: str | None = None,
 ) -> MissionMeta:
     """Run one mission end-to-end. See module docstring."""
     limits = limits or RunLimits()
@@ -392,7 +407,7 @@ async def dispatch(
         cross_project_memory=cross_project_memory,
         project_memory=project_memory,
     )
-    user_prompt = compose_user_prompt(ticket)
+    user_prompt = compose_user_prompt(ticket, extra_context=extra_context)
 
     # Create worktree.
     repo_path = Path(project.repo_path)
