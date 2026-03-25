@@ -8,7 +8,7 @@ from __future__ import annotations
 import typer
 from rich.table import Table
 
-from workforce import doctor, output
+from workforce import cli_mission, cli_project, cli_roster, doctor, output
 from workforce.version import __version__
 
 app = typer.Typer(
@@ -69,3 +69,24 @@ def doctor_command() -> None:
         output.warn("doctor: passed with warnings")
         return
     output.success("doctor: all checks passed")
+
+
+# ----- roster ---------------------------------------------------------------
+
+app.command("hire")(cli_roster.hire)
+app.command("fire")(cli_roster.fire)
+app.command("roster")(cli_roster.roster)
+app.command("show")(cli_roster.show)
+
+
+# ----- project --------------------------------------------------------------
+
+app.add_typer(cli_project.sub)
+
+
+# ----- mission --------------------------------------------------------------
+
+app.command("dispatch")(cli_mission.dispatch_command)
+app.command("missions")(cli_mission.missions_command)
+app.command("replay")(cli_mission.replay_command)
+app.add_typer(cli_mission.mission_sub)
