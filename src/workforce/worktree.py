@@ -38,6 +38,21 @@ class BranchExistsError(WorktreeError):
     """A branch with the target name already exists in the source repo."""
 
 
+class UnbornRepoError(WorktreeError):
+    """Source repo has no commits yet — can't fork a worktree from nothing."""
+
+
+def has_commits(repo_path: Path) -> bool:
+    """True if the repo has at least one commit reachable from HEAD."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 @dataclass(frozen=True)
 class WorktreeRef:
     repo_path: Path
@@ -93,6 +108,13 @@ class WorktreeManager:
             )
         if not is_git_repo(repo_path):
             raise WorktreeError(f"{repo_path} is not a git repository")
+
+        if not has_commits(repo_path):
+            raise UnbornRepoError(
+                f"{repo_path} has no commits yet — workforce can't fork a "
+                "worktree from an empty repo. Make at least one commit "
+                "(e.g. `git commit --allow-empty -m initial`) and try again."
+            )
 
         dirty = self._dirty_paths(repo_path)
         if dirty:

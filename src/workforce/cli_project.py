@@ -10,6 +10,7 @@ from rich.table import Table
 
 from workforce import output, paths, project
 from workforce.specialist import RosterStore
+from workforce.worktree import has_commits
 
 
 sub = typer.Typer(
@@ -75,6 +76,15 @@ def add(
     output.success(
         f"registered project {proj.name!r} (id {proj.id}) at {repo_path}"
     )
+
+    if not has_commits(repo_path):
+        output.warn(
+            "this repo has no commits yet. Workforce can't dispatch missions "
+            "until there's at least one commit. Run "
+            "`git -C "
+            + str(repo_path)
+            + " commit --allow-empty -m initial` to bootstrap."
+        )
 
 
 @sub.command("assign")

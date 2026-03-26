@@ -9,8 +9,10 @@ from workforce.worktree import (
     BRANCH_PREFIX,
     BranchExistsError,
     RepoNotCleanError,
+    UnbornRepoError,
     WorktreeError,
     WorktreeManager,
+    has_commits,
 )
 
 
@@ -92,6 +94,26 @@ def test_create_refuses_non_git_path(tmp_path: Path, manager: WorktreeManager) -
     plain.mkdir()
     with pytest.raises(WorktreeError, match="not a git repository"):
         manager.create(plain, PROJECT_ID, "m001")
+
+
+def test_create_refuses_unborn_repo(tmp_path: Path, manager: WorktreeManager) -> None:
+    """A repo with `git init` but no commits can't host worktrees."""
+    r = tmp_path / "unborn"
+    r.mkdir()
+    _run(["git", "init", "-q", "-b", "main"], r)
+    with pytest.raises(UnbornRepoError, match="no commits yet"):
+        manager.create(r, PROJECT_ID, "m001")
+
+
+def test_has_commits_true_after_commit(repo: Path) -> None:
+    assert has_commits(repo) is True
+
+
+def test_has_commits_false_when_unborn(tmp_path: Path) -> None:
+    r = tmp_path / "unborn"
+    r.mkdir()
+    _run(["git", "init", "-q", "-b", "main"], r)
+    assert has_commits(r) is False
 
 
 def test_create_refuses_existing_path(repo: Path, manager: WorktreeManager) -> None:
