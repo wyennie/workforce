@@ -23,7 +23,15 @@ from claude_agent_sdk import (
 from rich.panel import Panel
 from rich.table import Table
 
-from workforce import mission, output, paths, parallel, project as project_mod
+from workforce import (
+    manager,
+    mission,
+    output,
+    parallel,
+    paths,
+    project as project_mod,
+    specialist as specialist_mod,
+)
 from workforce.manager import (
     Decomposition,
     DecompositionKind,
@@ -141,29 +149,32 @@ def dispatch_command(
     project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
     ticket: str = typer.Argument(..., help="Ticket text in quotes."),
     specialist: str | None = typer.Option(
-        None, "--specialist", help="Override automatic specialist selection."
-    ),
-    parallel_flag: bool = typer.Option(
-        False,
-        "--parallel",
-        help="Run a Manager pass first, decompose into sub-tasks, dispatch in parallel worktrees.",
+        None,
+        "--specialist",
+        help="Bypass the Manager and dispatch this specialist directly. Use for tiny tickets where you don't need planning overhead.",
     ),
     auto_staff: bool = typer.Option(
         True,
         "--auto-staff/--no-auto-staff",
-        help="In --parallel mode, auto-assign existing roster members or auto-hire from templates as the Manager suggests. Default on.",
+        help="Let the Manager auto-assign roster members or auto-hire from templates as needed. Default on.",
     ),
-    max_turns: int = typer.Option(50, "--max-turns", help="Hard cap on assistant turns."),
-    max_cost: float = typer.Option(5.0, "--max-cost", help="Hard cap on total cost (USD)."),
+    max_turns: int = typer.Option(50, "--max-turns", help="Hard cap on assistant turns per sub-mission."),
+    max_cost: float = typer.Option(5.0, "--max-cost", help="Hard cap on cost (USD) per sub-mission."),
     max_wall: float = typer.Option(
-        1800.0, "--max-wall", help="Hard cap on wall-clock seconds."
+        1800.0, "--max-wall", help="Hard cap on wall-clock seconds per sub-mission."
     ),
     yes: bool = typer.Option(
         False, "--yes", "-y",
-        help="Skip the decomposition confirmation prompt (parallel mode only).",
+        help="Skip the decomposition confirmation prompt.",
     ),
 ) -> None:
-    """Dispatch a mission: pick a specialist, run them in a fresh worktree."""
+    """Dispatch a mission. The Manager plans it, then it runs.
+
+    The Manager runs first to decide whether the ticket should fan out across
+    multiple specialists in parallel, run as a sequential chain, or just go
+    to one specialist. Pass --specialist to skip the Manager and dispatch
+    directly to a named specialist (cheaper for tiny tickets).
+    """
     roster_store, project_store, worktree_manager = _stores()
 
     try:
@@ -181,48 +192,57 @@ def dispatch_command(
         max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall
     )
 
-    if parallel_flag:
-        if specialist is not None:
-            output.warn(
-                "--specialist is ignored in --parallel mode; the Manager picks "
-                "specialists per task. Pass it as --fallback if needed."
+    # Bypass: --specialist X skips the Manager entirely.
+    if specialist is not None:
+        if not roster_store.exists(specialist):
+            output.die(f"no such specialist: {specialist!r}")
+        if specialist not in proj.assigned_specialists:
+            output.die(
+                f"{specialist!r} isn't assigned to {proj.name}. "
+                f"Run `workforce project assign {proj.name} {specialist}` first."
             )
-        _dispatch_parallel(
-            proj, ticket, roster_store, project_store, worktree_manager,
-            limits=limits, fallback=specialist, skip_confirm=yes,
-            auto_staff=auto_staff,
+        _dispatch_direct(
+            proj, ticket, roster_store.load(specialist),
+            roster_store, project_store, worktree_manager, limits,
         )
         return
 
-    specialist_name = _resolve_specialist(proj, roster_store, specialist)
-    spec = roster_store.load(specialist_name)
+    # Default: Manager plans, then we route based on its decision.
+    _dispatch_with_manager(
+        proj, ticket, roster_store, project_store, worktree_manager,
+        limits=limits, skip_confirm=yes, auto_staff=auto_staff,
+    )
 
+
+def _dispatch_direct(
+    proj: project_mod.Project,
+    ticket: str,
+    spec: "specialist_mod.Specialist",
+    roster_store: RosterStore,
+    project_store: project_mod.ProjectStore,
+    worktree_manager: WorktreeManager,
+    limits: RunLimits,
+) -> None:
+    """Single specialist, no Manager. The --specialist X bypass."""
     output.info(
         f"[bold]dispatching[/bold] {spec.name} on {proj.name}: "
-        f"[italic]{_truncate(ticket, 80)}[/italic]"
+        f"[italic]{_truncate(ticket, 80)}[/italic]  [dim](no manager)[/dim]"
     )
     output.rule()
-
     try:
         meta = asyncio.run(
             mission.dispatch(
-                project=proj,
-                specialist=spec,
-                ticket=ticket,
-                roster_store=roster_store,
-                project_store=project_store,
-                worktree_manager=worktree_manager,
-                limits=limits,
+                project=proj, specialist=spec, ticket=ticket,
+                roster_store=roster_store, project_store=project_store,
+                worktree_manager=worktree_manager, limits=limits,
                 on_message=_make_renderer(),
             )
         )
     except KeyboardInterrupt:
         output.warn("interrupted")
         raise typer.Exit(code=130)
-
     output.rule()
     _print_summary(meta)
-
     if meta.status is not MissionStatus.COMPLETED:
         raise typer.Exit(code=1)
 
@@ -230,7 +250,7 @@ def dispatch_command(
 # ----- parallel dispatch -----------------------------------------------------
 
 
-def _dispatch_parallel(
+def _dispatch_with_manager(
     proj: project_mod.Project,
     ticket: str,
     roster_store: RosterStore,
@@ -238,27 +258,143 @@ def _dispatch_parallel(
     worktree_manager: WorktreeManager,
     *,
     limits: RunLimits,
-    fallback: str | None,
     skip_confirm: bool,
     auto_staff: bool,
 ) -> None:
-    # With auto-staff on, an empty roster is fine — Manager can hire as needed.
+    """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
         output.die(
             f"no specialists assigned to project {proj.name!r} and --no-auto-staff. "
-            f"Run `workforce project assign {proj.name} <specialist>` first or drop "
-            "the --no-auto-staff flag."
+            f"Either assign specialists or drop --no-auto-staff so the Manager "
+            "can hire from templates as needed."
         )
 
     output.info(
-        f"[bold]parallel dispatch[/bold] on {proj.name}: "
+        f"[bold]dispatching[/bold] on {proj.name}: "
         f"[italic]{_truncate(ticket, 80)}[/italic]"
     )
-    if auto_staff:
-        output.info("[dim]running Manager (auto-staff: assign + hire as needed)...[/dim]")
-    else:
-        output.info("[dim]running Manager...[/dim]")
+    output.info("[dim]Manager planning...[/dim]")
 
+    # Run the Manager.
+    specs_info = parallel._build_specialist_info(proj, roster_store, project_store)
+    try:
+        decomp, manager_cost, _ = asyncio.run(
+            manager.run_manager(
+                ticket=ticket,
+                repo_path=Path(proj.repo_path),
+                project_specialists=specs_info,
+            )
+        )
+    except KeyboardInterrupt:
+        output.warn("interrupted")
+        raise typer.Exit(code=130)
+    except ManagerError as e:
+        output.die(f"manager: {e}")
+
+    output.info(
+        f"[dim]manager: kind={decomp.kind.value}  cost=${manager_cost:.4f}  "
+        f"({decomp.rationale})[/dim]"
+    )
+
+    # Branch on kind.
+    if decomp.kind is DecompositionKind.SINGLE:
+        _dispatch_after_manager_single(
+            proj, ticket, decomp, manager_cost,
+            roster_store, project_store, worktree_manager,
+            limits=limits, auto_staff=auto_staff,
+        )
+    else:
+        _dispatch_after_manager_parallel(
+            proj, ticket, decomp, manager_cost,
+            roster_store, project_store, worktree_manager,
+            limits=limits, skip_confirm=skip_confirm, auto_staff=auto_staff,
+        )
+
+
+def _dispatch_after_manager_single(
+    proj: project_mod.Project,
+    ticket: str,
+    decomp: Decomposition,
+    manager_cost: float,
+    roster_store: RosterStore,
+    project_store: project_mod.ProjectStore,
+    worktree_manager: WorktreeManager,
+    *,
+    limits: RunLimits,
+    auto_staff: bool,
+) -> None:
+    """Manager said single. Use its specialist suggestion, dispatch one mission."""
+    if not decomp.tasks:
+        output.die("manager returned kind=single but no tasks")
+
+    # Resolve the one task's specialist via the same auto-staff path.
+    try:
+        resolved = parallel.resolve_task_specialists(
+            decomp,
+            parent_mission_id=mission.generate_mission_id(),
+            project=proj,
+            roster_store=roster_store,
+            project_store=project_store,
+            auto_staff=auto_staff,
+        )
+    except ResolutionError as e:
+        output.die(str(e))
+
+    r = resolved[0]
+    # For single, drop the __task suffix — it's just one mission, no parent.
+    mission_id = mission.generate_mission_id()
+    task = r.task
+
+    if r.staffing_action == "auto_hired_from_template":
+        output.info(f"[bold magenta]Auto-hired:[/bold magenta] {r.specialist.name} (← {task.template_hint})")
+    elif r.staffing_action == "auto_assigned_from_roster":
+        output.info(f"[cyan]Auto-assigned:[/cyan] {r.specialist.name}")
+
+    output.info(
+        f"[dim]single task → {r.specialist.name} ({mission_id})[/dim]"
+    )
+    output.rule()
+
+    # Save the decomposition alongside the mission for traceability.
+    mp = mission.mission_paths(proj.id, mission_id)
+    mp.root.mkdir(parents=True, exist_ok=True)
+    (mp.root / "decomposition.json").write_text(decomp.model_dump_json(indent=2) + "\n")
+
+    try:
+        meta = asyncio.run(
+            mission.dispatch(
+                project=proj, specialist=r.specialist,
+                ticket=task.description if task.description.strip() else ticket,
+                roster_store=roster_store, project_store=project_store,
+                worktree_manager=worktree_manager, limits=limits,
+                on_message=_make_renderer(),
+                mission_id=mission_id,
+                manager_cost_usd=manager_cost,
+            )
+        )
+    except KeyboardInterrupt:
+        output.warn("interrupted")
+        raise typer.Exit(code=130)
+    output.rule()
+    _print_summary(meta)
+    if meta.status is not MissionStatus.COMPLETED:
+        raise typer.Exit(code=1)
+
+
+def _dispatch_after_manager_parallel(
+    proj: project_mod.Project,
+    ticket: str,
+    decomp: Decomposition,
+    manager_cost: float,
+    roster_store: RosterStore,
+    project_store: project_mod.ProjectStore,
+    worktree_manager: WorktreeManager,
+    *,
+    limits: RunLimits,
+    skip_confirm: bool,
+    auto_staff: bool,
+) -> None:
+    """Manager said parallel/sequential. Hand off to the parallel orchestrator."""
     confirm_cb: parallel.ConfirmCallback | None
     if skip_confirm:
         confirm_cb = lambda _d, _r: True  # noqa: E731
@@ -275,16 +411,20 @@ def _dispatch_parallel(
                 worktree_manager=worktree_manager,
                 sub_mission_limits=limits,
                 make_sub_callback=_make_sub_renderer,
-                fallback_specialist=fallback,
                 confirm=confirm_cb,
                 auto_staff=auto_staff,
+                decomposition_override=decomp,
             )
         )
     except KeyboardInterrupt:
         output.warn("interrupted")
         raise typer.Exit(code=130)
-    except (ManagerError, ValidationError, ResolutionError) as e:
+    except (ValidationError, ResolutionError) as e:
         output.die(str(e))
+
+    # Patch in the manager_cost we already paid (parallel.dispatch_parallel
+    # records 0 because we passed decomposition_override).
+    result.parent_meta.manager_cost_usd = manager_cost
 
     output.rule()
     _print_parallel_summary(result.parent_meta, result.sub_metas)

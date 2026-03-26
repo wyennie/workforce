@@ -351,3 +351,28 @@ Each task row in the decomposition table shows one of: `assigned` (dim), `auto-a
 - **Make specialists ephemeral.** They remain persistent roster members. An auto-hired `docs-writer` lives forever (until `workforce fire`), accumulates memory, and gets reused on future missions. This preserves the "memory compounds" property; the alternative (mission-scoped throwaways) would be a different product.
 - **Auto-hire on single-dispatch.** Only `--parallel` mode auto-staffs. Single dispatch still requires `--specialist` if the project has multiple assigned, or auto-picks if exactly one. Keeps the simple path simple.
 - **Open `$EDITOR` on the decomposition.** Considered for letting users override Manager's specialist picks pre-confirm. Defer until users actually want it.
+
+---
+
+## v0.2.2 — Manager always-on as default (2026-05-02)
+
+### `--parallel` flag dropped; Manager runs by default
+`workforce dispatch myrepo "ticket"` always runs the Manager first. The Manager picks `kind: parallel | sequential | single` based on the ticket and the repo. We removed the `--parallel` flag entirely — it was a redundant ceremony since the Manager itself can return `kind=single` when nothing decomposes.
+
+### `--specialist X` becomes the explicit bypass
+For tiny tickets ("fix typo on line 23"), the Manager pass is pure overhead (~$0.05-0.10, ~10-30s). `--specialist X` skips the Manager and dispatches X directly. Documented in the help text as "use for tiny tickets where you don't need planning overhead". Requires X to already be assigned to the project — bypassing the Manager also bypasses auto-staff.
+
+### Routing inside the dispatch handler
+1. `--specialist X` set → `_dispatch_direct` (no Manager, single mission via `mission.dispatch`).
+2. Otherwise → `_dispatch_with_manager` runs the Manager once, then:
+   - `kind=single` → `mission.dispatch` directly with the Manager's specialist suggestion. Mission ID is flat (no `__solo` suffix). Decomposition.json saved alongside the mission for traceability.
+   - `kind=parallel | sequential` → `parallel.dispatch_parallel(decomposition_override=...)` reuses the existing orchestrator without re-running the Manager.
+
+### `kind=single` skips the confirmation prompt
+There's nothing to review for a one-task plan. The Manager's verdict line ("manager: kind=single, cost=$0.05, rationale=...") is shown and the mission just runs. Confirmation only appears for parallel/sequential where there's a fan-out to confirm.
+
+### `MissionMeta.manager_cost_usd: float = 0.0`
+Tracks the planning cost per mission. Lumped into `cost_usd` for the headline number; broken out in the JSON for transparency. For parallel missions, the field lives on `ParallelMissionMeta` and represents the planning cost shared across all sub-missions. For `kind=single` routed through `mission.dispatch`, the field is on the single mission's meta directly.
+
+### "Cost" in CLI output is a budget signal, not money
+The SDK reports tokens × API price as the `cost_usd` field. Since we authenticate via the user's `claude` CLI session (which uses their Claude Code subscription quota), this number doesn't directly correspond to dollars billed unless they exceed their plan. We keep the field name as `cost_usd` because it's accurate (it IS the API-equivalent cost) and it's what `--max-cost` caps.

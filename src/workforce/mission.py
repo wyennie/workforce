@@ -87,6 +87,7 @@ class MissionMeta(BaseModel):
     status: MissionStatus
     error_detail: str | None = None
     cost_usd: float = 0.0
+    manager_cost_usd: float = 0.0  # planning cost when Manager picked this specialist
     turn_count: int = 0
     commits: list[CommitInfo] = Field(default_factory=list)
     memory_delta_captured: bool = False
@@ -390,6 +391,7 @@ async def dispatch(
     on_message: EventCallback | None = None,
     mission_id: str | None = None,
     extra_context: str | None = None,
+    manager_cost_usd: float = 0.0,
 ) -> MissionMeta:
     """Run one mission end-to-end. See module docstring."""
     limits = limits or RunLimits()
@@ -489,7 +491,8 @@ async def dispatch(
         duration_seconds=run.duration_seconds,
         status=final_status,
         error_detail=error_detail,
-        cost_usd=run.cost_usd + delta_cost,
+        cost_usd=run.cost_usd + delta_cost + manager_cost_usd,
+        manager_cost_usd=manager_cost_usd,
         turn_count=run.turn_count,
         commits=commits,
         memory_delta_captured=delta is not None,
