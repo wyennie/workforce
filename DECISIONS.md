@@ -320,3 +320,34 @@ Cheaper than I expected. The contract pays for itself: each specialist worked ag
 2. **Same `/root/repo/...` initial misfires** as v0.1. Each parallel specialist hit it once, wasting 1-2 turns. Worth fixing globally (prepend cwd to user prompt).
 3. **Single-commit-per-task** in all three subs. For tightly-scoped subtasks this is fine — the warning we have for `<2 commits` is more relevant for the parent ticket than for each subtask. Could suppress the warning in parallel mode.
 4. **Live output got busy** with 3 streams. Readable but noisy. Worth doing rich `Live` panels per task in a future iteration.
+
+---
+
+## v0.2.1 — Auto-staffing (2026-05-02)
+
+### Problem
+v0.2 required the user to pre-hire and pre-assign specialists for every project. For new projects or surprising tickets ("we need a docs writer here"), that was friction. The Manager already knows what specialties a ticket needs — let it staff up automatically.
+
+### Three-tier resolution in `parallel.resolve_task_specialists`
+1. **Already assigned to project** → use directly. (Default path; preserves the persistent-memory wedge.)
+2. **In global roster but not assigned** → auto-assign to the project. Specialist keeps their identity and any cross-project memory; gains project memory from this mission forward.
+3. **Doesn't exist anywhere** → if `template_hint` is provided, hire from template + assign + use. Specialist becomes a permanent roster member the user can `workforce show` and `workforce fire` later.
+
+Project file is mutated and persisted exactly once at the end of resolution (one `project_store.save(overwrite=True)`), not per task — avoids racy partial writes if a later task fails.
+
+### `Task.template_hint: str | None`
+New optional field on the Decomposition's task schema. The Manager fills it whenever it suggests a name that isn't already in the project's specialist list, picking from `backend | frontend | tester | reviewer | generalist`. If the Manager omits it for a non-existent name, resolution falls back to the explicit fallback specialist or errors loudly.
+
+### Manager sees mission counts now
+Old user prompt: "Available specialists: aria, ben, casey." New: each is annotated with `(N missions on this project)` and their role description. Gives the Manager signal on **who actually knows the codebase** — a specialist with 5 missions on this repo is preferable to a fresh hire even when both could do the work. (Brief's wedge: persistent memory compounds.)
+
+### `--auto-staff/--no-auto-staff` CLI flag, default ON
+Default-on because the user explicitly asked for "look at roster, hire as needed." `--no-auto-staff` reverts to v0.2 strict behavior: refuse if Manager picks an unassigned/non-existent specialist. Single-specialist `dispatch` (non-parallel) doesn't get the flag — that's the "I know exactly who I want" path.
+
+### Staffing actions surfaced in confirm UI
+Each task row in the decomposition table shows one of: `assigned` (dim), `auto-assigned` (cyan), `auto-hired (← template)` (magenta), `fallback` (yellow). Plus a callout above the prompt listing new hires and auto-assignments by name. User sees what's about to change before saying yes.
+
+### What we did NOT do
+- **Make specialists ephemeral.** They remain persistent roster members. An auto-hired `docs-writer` lives forever (until `workforce fire`), accumulates memory, and gets reused on future missions. This preserves the "memory compounds" property; the alternative (mission-scoped throwaways) would be a different product.
+- **Auto-hire on single-dispatch.** Only `--parallel` mode auto-staffs. Single dispatch still requires `--specialist` if the project has multiple assigned, or auto-picks if exactly one. Keeps the simple path simple.
+- **Open `$EDITOR` on the decomposition.** Considered for letting users override Manager's specialist picks pre-confirm. Defer until users actually want it.

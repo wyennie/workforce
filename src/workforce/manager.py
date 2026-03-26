@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     TextBlock,
     query,
 )
+from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -60,6 +61,7 @@ class Task(BaseModel):
     excludes_paths: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     suggested_specialist: str | None = None
+    template_hint: str | None = None  # used to auto-hire if specialist missing
     estimated_turns: int = 10
 
     @field_validator("id")
@@ -136,6 +138,27 @@ that creates merge headaches.
 - For `single`, produce one task in `tasks` with the full ticket as its
   description, and no contract.
 
+## Picking specialists
+
+You'll be told which specialists are already assigned to this project, with
+mission counts. **Prefer assigned specialists** — they have project memory
+from past missions and know this codebase.
+
+If a task needs a specialty that no assigned specialist covers, suggest a
+new name and provide `template_hint` so Workforce can hire one for you.
+The available templates are:
+
+- `backend` — APIs, services, data models, infrastructure
+- `frontend` — components, state, accessibility, UI
+- `tester` — writes/maintains tests, hunts regressions
+- `reviewer` — read-only code reviewer (no Write/Edit)
+- `generalist` — anything
+
+`suggested_specialist` is the name to use; `template_hint` is the template
+to hire from if that name doesn't exist yet. Names should be short
+descriptive slugs (e.g., `docs`, `api-tester`, `migration-aria`). If you
+suggest an existing assigned specialist, leave `template_hint` null.
+
 ## Output schema
 
 ```json
@@ -156,7 +179,8 @@ that creates merge headaches.
       "owns_paths": ["<glob>", "..."],
       "excludes_paths": ["<glob>", "..."],
       "depends_on": ["contract", "<other-task-id>"],
-      "suggested_specialist": "<specialist-name-from-roster>",
+      "suggested_specialist": "<existing-assigned-name OR new-name>",
+      "template_hint": "<template-name OR null>",
       "estimated_turns": <int>
     }
   ],
@@ -170,19 +194,37 @@ the source branch — must respect `depends_on`.
 """
 
 
-def _user_prompt(ticket: str, available_specialists: list[str]) -> str:
-    spec_list = ", ".join(available_specialists) if available_specialists else "(none assigned)"
+@dataclass(frozen=True)
+class SpecialistInfo:
+    """Compact view of one specialist for the Manager's prompt."""
+    name: str
+    role: str
+    project_missions: int  # past completed missions on THIS project
+
+
+def _user_prompt(ticket: str, project_specialists: list[SpecialistInfo]) -> str:
+    if project_specialists:
+        lines = []
+        for s in project_specialists:
+            tag = f"({s.project_missions} mission{'s' if s.project_missions != 1 else ''} on this project)"
+            lines.append(f"- `{s.name}` {tag} — {s.role}")
+        listing = "\n".join(lines)
+    else:
+        listing = "(none assigned to this project yet)"
     return f"""\
 ## Ticket
 
 {ticket.strip()}
 
-## Available specialists for this project
+## Specialists currently assigned to this project
 
-{spec_list}
+{listing}
 
-Use these names in `suggested_specialist`. If none are listed, pick a
-sensible name and the user will reassign post-decomposition.
+Prefer these names — they have project memory and know the codebase.
+For any task that needs a specialty none of them cover, suggest a new
+short name and set `template_hint` to one of: `backend`, `frontend`,
+`tester`, `reviewer`, `generalist`. Workforce will auto-hire from the
+template before dispatching.
 
 Now look at the repo and produce the decomposition JSON.
 """
@@ -405,7 +447,7 @@ async def run_manager(
     *,
     ticket: str,
     repo_path: Path,
-    available_specialists: list[str],
+    project_specialists: list[SpecialistInfo],
     model: str = DEFAULT_MANAGER_MODEL,
     max_turns: int = 25,
     max_budget_usd: float = 1.0,
@@ -432,7 +474,7 @@ async def run_manager(
     async def consume() -> None:
         nonlocal cost
         async for msg in query(
-            prompt=_user_prompt(ticket, available_specialists),
+            prompt=_user_prompt(ticket, project_specialists),
             options=options,
         ):
             collected.append(msg)

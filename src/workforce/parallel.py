@@ -26,6 +26,7 @@ from workforce.manager import (
     Decomposition,
     DecompositionKind,
     ManagerError,
+    SpecialistInfo,
     Task,
     ValidationError,
 )
@@ -37,7 +38,12 @@ from workforce.mission import (
 )
 from workforce.project import Project, ProjectStore
 from workforce.runner import EventCallback, RunLimits
-from workforce.specialist import RosterStore, Specialist
+from workforce.specialist import (
+    TEMPLATES,
+    RosterError,
+    RosterStore,
+    Specialist,
+)
 from workforce.worktree import WorktreeManager
 
 
@@ -90,6 +96,8 @@ class _ResolvedTask:
     task: Task
     specialist: Specialist
     sub_mission_id: str
+    staffing_action: str = "already_assigned"
+    # one of: already_assigned | auto_assigned_from_roster | auto_hired_from_template | fallback
 
 
 class ResolutionError(Exception):
@@ -102,36 +110,122 @@ def resolve_task_specialists(
     parent_mission_id: str,
     project: Project,
     roster_store: RosterStore,
+    project_store: ProjectStore,
     fallback_specialist: str | None = None,
+    auto_staff: bool = True,
 ) -> list[_ResolvedTask]:
-    """Pick a Specialist for each task. Suggested name wins if assigned;
-    else fall back to the explicit fallback; else error.
+    """Pick a Specialist for each task. Resolution priority:
+
+    1. `suggested_specialist` is assigned to the project → use them.
+    2. `suggested_specialist` exists in the global roster → if `auto_staff`,
+       assign them to the project; else fall through.
+    3. `suggested_specialist` doesn't exist + `template_hint` set + `auto_staff`
+       → hire from template, assign to project, use.
+    4. `fallback_specialist` set → use them.
+    5. Project has exactly one assigned specialist → use them.
+    6. Error.
+
+    Mutates `project.assigned_specialists` and persists via `project_store`
+    when auto-assigning or auto-hiring.
     """
-    assigned = set(project.assigned_specialists)
     resolved: list[_ResolvedTask] = []
+    project_dirty = False
+
     for task in decomp.tasks:
-        choice = task.suggested_specialist
-        if choice and choice not in assigned:
-            choice = None
-        if choice is None and fallback_specialist:
-            choice = fallback_specialist
-        if choice is None and len(assigned) == 1:
-            choice = next(iter(assigned))
-        if choice is None:
-            raise ResolutionError(
-                f"task {task.id!r} suggests {task.suggested_specialist!r} which "
-                f"isn't assigned to {project.name!r} (have: "
-                f"{', '.join(sorted(assigned)) or 'none'}). Pass a fallback."
-            )
-        if not roster_store.exists(choice):
-            raise ResolutionError(
-                f"task {task.id!r} resolved to {choice!r} but no such "
-                "specialist in the roster"
-            )
-        spec = roster_store.load(choice)
+        spec, action, dirty = _staff_one_task(
+            task=task,
+            project=project,
+            roster_store=roster_store,
+            fallback_specialist=fallback_specialist,
+            auto_staff=auto_staff,
+        )
+        if dirty:
+            project_dirty = True
         sub_id = f"{parent_mission_id}__{task.id}"
-        resolved.append(_ResolvedTask(task=task, specialist=spec, sub_mission_id=sub_id))
+        resolved.append(
+            _ResolvedTask(
+                task=task,
+                specialist=spec,
+                sub_mission_id=sub_id,
+                staffing_action=action,
+            )
+        )
+
+    if project_dirty:
+        project_store.save(project, overwrite=True)
+
     return resolved
+
+
+def _staff_one_task(
+    *,
+    task: Task,
+    project: Project,
+    roster_store: RosterStore,
+    fallback_specialist: str | None,
+    auto_staff: bool,
+) -> tuple[Specialist, str, bool]:
+    """Resolve one task to a Specialist; return (spec, action, project_dirty)."""
+    assigned = set(project.assigned_specialists)
+    name = task.suggested_specialist
+
+    # 1. Already assigned.
+    if name and name in assigned:
+        return roster_store.load(name), "already_assigned", False
+
+    # 2. In roster but not assigned — auto-assign if allowed.
+    if name and roster_store.exists(name):
+        if auto_staff:
+            project.assigned_specialists.append(name)
+            return roster_store.load(name), "auto_assigned_from_roster", True
+        # else fall through to fallback
+
+    # 3. Doesn't exist + template_hint provided + auto-staff allowed → hire.
+    if (
+        name
+        and not roster_store.exists(name)
+        and task.template_hint
+        and auto_staff
+    ):
+        if task.template_hint not in TEMPLATES:
+            raise ResolutionError(
+                f"task {task.id!r} requested template {task.template_hint!r} "
+                f"which doesn't exist; available: {', '.join(sorted(TEMPLATES))}"
+            )
+        try:
+            spec = Specialist.from_template(name, task.template_hint)
+            roster_store.save(spec)
+        except (RosterError, ValueError) as e:
+            raise ResolutionError(
+                f"task {task.id!r}: failed to auto-hire {name!r} from template "
+                f"{task.template_hint!r}: {e}"
+            ) from e
+        project.assigned_specialists.append(name)
+        return spec, "auto_hired_from_template", True
+
+    # 4. Fallback specialist.
+    if fallback_specialist:
+        if not roster_store.exists(fallback_specialist):
+            raise ResolutionError(
+                f"fallback specialist {fallback_specialist!r} doesn't exist"
+            )
+        if fallback_specialist not in assigned and auto_staff:
+            project.assigned_specialists.append(fallback_specialist)
+            return roster_store.load(fallback_specialist), "fallback", True
+        return roster_store.load(fallback_specialist), "fallback", False
+
+    # 5. One assigned specialist on the project — use them.
+    if len(project.assigned_specialists) == 1:
+        only = project.assigned_specialists[0]
+        return roster_store.load(only), "fallback", False
+
+    # 6. Out of options.
+    raise ResolutionError(
+        f"task {task.id!r}: cannot resolve specialist (suggested={name!r}, "
+        f"template_hint={task.template_hint!r}, assigned to project: "
+        f"{', '.join(sorted(assigned)) or 'none'}). "
+        f"Hint: pass --fallback or assign specialists to the project."
+    )
 
 
 # ----- Orchestration --------------------------------------------------------
@@ -139,6 +233,52 @@ def resolve_task_specialists(
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _build_specialist_info(
+    project: Project,
+    roster_store: RosterStore,
+    project_store: ProjectStore,
+) -> list[SpecialistInfo]:
+    """Compact view of project-assigned specialists with mission counts.
+
+    Mission count = how many missions on THIS project have a meta.json
+    naming this specialist with status=completed. Cheap scan; project
+    histories are small.
+    """
+    missions_dir = project_store.missions_dir(project.id)
+    counts: dict[str, int] = {}
+    if missions_dir.is_dir():
+        for d in missions_dir.iterdir():
+            if not d.is_dir():
+                continue
+            meta_path = d / "meta.json"
+            if not meta_path.is_file():
+                continue
+            try:
+                import json as _json
+                meta = _json.loads(meta_path.read_text())
+            except (OSError, ValueError):
+                continue
+            if meta.get("status") != "completed":
+                continue
+            name = meta.get("specialist")
+            if isinstance(name, str):
+                counts[name] = counts.get(name, 0) + 1
+
+    out: list[SpecialistInfo] = []
+    for name in project.assigned_specialists:
+        if not roster_store.exists(name):
+            continue
+        spec = roster_store.load(name)
+        out.append(
+            SpecialistInfo(
+                name=name,
+                role=spec.role,
+                project_missions=counts.get(name, 0),
+            )
+        )
+    return out
 
 
 def _materialize_contract(decomp: Decomposition, parent_dir: Path) -> Path | None:
@@ -186,6 +326,7 @@ async def dispatch_parallel(
     confirm: "ConfirmCallback | None" = None,
     parent_mission_id: str | None = None,
     decomposition_override: Decomposition | None = None,
+    auto_staff: bool = True,
 ) -> ParallelDispatchResult:
     """Plan with the Manager, validate, optionally confirm, then fan out.
 
@@ -205,11 +346,12 @@ async def dispatch_parallel(
     if decomposition_override is not None:
         decomp = decomposition_override
     else:
+        specs_info = _build_specialist_info(project, roster_store, project_store)
         try:
             decomp, manager_cost, _ = await manager.run_manager(
                 ticket=ticket,
                 repo_path=Path(project.repo_path),
-                available_specialists=list(project.assigned_specialists),
+                project_specialists=specs_info,
             )
         except ManagerError as e:
             _save_parent_meta(
@@ -241,18 +383,23 @@ async def dispatch_parallel(
         available_specialists=list(project.assigned_specialists) or None,
     )
 
-    # ---- 3. Resolve specialists ----
+    # ---- 3. Resolve specialists (auto-assign + auto-hire if allowed) ----
     resolved = resolve_task_specialists(
         decomp,
         parent_mission_id=parent_mission_id,
         project=project,
         roster_store=roster_store,
+        project_store=project_store,
         fallback_specialist=fallback_specialist,
+        auto_staff=auto_staff,
     )
 
     # ---- 4. Confirm ----
     if confirm is not None:
-        if not confirm(decomp, [(r.task.id, r.specialist.name) for r in resolved]):
+        confirm_rows = [
+            (r.task.id, r.specialist.name, r.staffing_action) for r in resolved
+        ]
+        if not confirm(decomp, confirm_rows):
             parent_meta = ParallelMissionMeta(
                 parent_mission_id=parent_mission_id,
                 project_id=project.id,
@@ -373,7 +520,8 @@ def _save_parent_meta(path: Path, meta: ParallelMissionMeta) -> None:
 
 from collections.abc import Callable
 
-ConfirmCallback = Callable[[Decomposition, list[tuple[str, str]]], bool]
+# confirm receives (decomposition, [(task_id, specialist_name, staffing_action)])
+ConfirmCallback = Callable[[Decomposition, list[tuple[str, str, str]]], bool]
 SubCallbackFactory = Callable[[str], EventCallback]
 
 

@@ -113,41 +113,118 @@ def _decomp_three_tasks() -> Decomposition:
 
 
 def test_resolve_uses_suggested(stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project]) -> None:
-    rs, _, _, proj = stores_and_project
+    rs, ps, _, proj = stores_and_project
     decomp = _decomp_three_tasks()
     resolved = resolve_task_specialists(
-        decomp, parent_mission_id="m-x", project=proj, roster_store=rs
+        decomp, parent_mission_id="m-x", project=proj, roster_store=rs,
+        project_store=ps,
     )
     by_task = {r.task.id: r.specialist.name for r in resolved}
     assert by_task == {"impl": "aria", "tests": "casey", "docs": "ben"}
+    assert all(r.staffing_action == "already_assigned" for r in resolved)
 
 
-def test_resolve_falls_back_when_suggestion_unassigned(
+def test_resolve_auto_assigns_existing_roster_member(
     stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
 ) -> None:
-    rs, _, _, proj = stores_and_project
+    """Manager suggests an existing specialist who isn't on the project yet."""
+    rs, ps, _, proj = stores_and_project
+    rs.save(Specialist.from_template("dana", "generalist"))  # not assigned
     decomp = _decomp_three_tasks()
-    decomp.tasks[0].suggested_specialist = "ghost"  # not assigned
+    decomp.tasks[0].suggested_specialist = "dana"
+
     resolved = resolve_task_specialists(
-        decomp,
-        parent_mission_id="m-x",
-        project=proj,
-        roster_store=rs,
+        decomp, parent_mission_id="m-x", project=proj,
+        roster_store=rs, project_store=ps,
+    )
+    impl = next(r for r in resolved if r.task.id == "impl")
+    assert impl.specialist.name == "dana"
+    assert impl.staffing_action == "auto_assigned_from_roster"
+    refreshed = ps.load_by_id(proj.id)
+    assert "dana" in refreshed.assigned_specialists
+
+
+def test_resolve_auto_hires_from_template(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    rs, ps, _, proj = stores_and_project
+    decomp = _decomp_three_tasks()
+    decomp.tasks[0].suggested_specialist = "migration-aria"
+    decomp.tasks[0].template_hint = "backend"
+
+    resolved = resolve_task_specialists(
+        decomp, parent_mission_id="m-x", project=proj,
+        roster_store=rs, project_store=ps,
+    )
+    impl = next(r for r in resolved if r.task.id == "impl")
+    assert impl.specialist.name == "migration-aria"
+    assert impl.staffing_action == "auto_hired_from_template"
+    assert rs.exists("migration-aria")
+    refreshed = ps.load_by_id(proj.id)
+    assert "migration-aria" in refreshed.assigned_specialists
+
+
+def test_resolve_auto_hire_unknown_template_errors(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    rs, ps, _, proj = stores_and_project
+    decomp = _decomp_three_tasks()
+    decomp.tasks[0].suggested_specialist = "newcomer"
+    decomp.tasks[0].template_hint = "no-such-template"
+    with pytest.raises(ResolutionError, match="doesn't exist"):
+        resolve_task_specialists(
+            decomp, parent_mission_id="m-x", project=proj,
+            roster_store=rs, project_store=ps,
+        )
+
+
+def test_resolve_no_auto_staff_falls_back(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """With auto_staff=False, an unassigned roster member falls through."""
+    rs, ps, _, proj = stores_and_project
+    rs.save(Specialist.from_template("dana", "generalist"))
+    decomp = _decomp_three_tasks()
+    decomp.tasks[0].suggested_specialist = "dana"
+
+    resolved = resolve_task_specialists(
+        decomp, parent_mission_id="m-x", project=proj,
+        roster_store=rs, project_store=ps,
+        fallback_specialist="aria", auto_staff=False,
+    )
+    impl = next(r for r in resolved if r.task.id == "impl")
+    assert impl.specialist.name == "aria"
+    assert impl.staffing_action == "fallback"
+    refreshed = ps.load_by_id(proj.id)
+    assert "dana" not in refreshed.assigned_specialists
+
+
+def test_resolve_falls_back_when_suggestion_unknown_no_template(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    rs, ps, _, proj = stores_and_project
+    decomp = _decomp_three_tasks()
+    decomp.tasks[0].suggested_specialist = "ghost"  # not in roster, no template hint
+    resolved = resolve_task_specialists(
+        decomp, parent_mission_id="m-x", project=proj,
+        roster_store=rs, project_store=ps,
         fallback_specialist="aria",
     )
-    by_task = {r.task.id: r.specialist.name for r in resolved}
-    assert by_task["impl"] == "aria"
+    impl = next(r for r in resolved if r.task.id == "impl")
+    assert impl.specialist.name == "aria"
+    assert impl.staffing_action == "fallback"
 
 
 def test_resolve_errors_when_no_suggestion_and_no_fallback(
     stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
 ) -> None:
-    rs, _, _, proj = stores_and_project
+    rs, ps, _, proj = stores_and_project
     decomp = _decomp_three_tasks()
     decomp.tasks[0].suggested_specialist = None
-    with pytest.raises(ResolutionError, match="suggests None"):
+    with pytest.raises(ResolutionError, match="cannot resolve"):
         resolve_task_specialists(
-            decomp, parent_mission_id="m-x", project=proj, roster_store=rs
+            decomp, parent_mission_id="m-x", project=proj,
+            roster_store=rs, project_store=ps,
         )
 
 
@@ -166,7 +243,8 @@ def test_resolve_uses_only_assigned_when_one_specialist(
         merge_order=["solo"],
     )
     resolved = resolve_task_specialists(
-        decomp, parent_mission_id="m-x", project=proj, roster_store=rs
+        decomp, parent_mission_id="m-x", project=proj, roster_store=rs,
+        project_store=ps,
     )
     assert resolved[0].specialist.name == "solo"
 
@@ -282,7 +360,7 @@ def test_dispatch_parallel_full_flow(
     decomp = _decomp_three_tasks()
 
     captured_calls: list[str] = []
-    def confirm(d: Decomposition, resolved: list[tuple[str, str]]) -> bool:
+    def confirm(d: Decomposition, resolved: list[tuple[str, str, str]]) -> bool:
         captured_calls.append("confirm")
         return True
 

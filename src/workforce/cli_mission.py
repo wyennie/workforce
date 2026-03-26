@@ -148,6 +148,11 @@ def dispatch_command(
         "--parallel",
         help="Run a Manager pass first, decompose into sub-tasks, dispatch in parallel worktrees.",
     ),
+    auto_staff: bool = typer.Option(
+        True,
+        "--auto-staff/--no-auto-staff",
+        help="In --parallel mode, auto-assign existing roster members or auto-hire from templates as the Manager suggests. Default on.",
+    ),
     max_turns: int = typer.Option(50, "--max-turns", help="Hard cap on assistant turns."),
     max_cost: float = typer.Option(5.0, "--max-cost", help="Hard cap on total cost (USD)."),
     max_wall: float = typer.Option(
@@ -185,6 +190,7 @@ def dispatch_command(
         _dispatch_parallel(
             proj, ticket, roster_store, project_store, worktree_manager,
             limits=limits, fallback=specialist, skip_confirm=yes,
+            auto_staff=auto_staff,
         )
         return
 
@@ -234,18 +240,24 @@ def _dispatch_parallel(
     limits: RunLimits,
     fallback: str | None,
     skip_confirm: bool,
+    auto_staff: bool,
 ) -> None:
-    if not proj.assigned_specialists:
+    # With auto-staff on, an empty roster is fine — Manager can hire as needed.
+    if not proj.assigned_specialists and not auto_staff:
         output.die(
-            f"no specialists assigned to project {proj.name!r}. "
-            f"Run `workforce project assign {proj.name} <specialist>` first."
+            f"no specialists assigned to project {proj.name!r} and --no-auto-staff. "
+            f"Run `workforce project assign {proj.name} <specialist>` first or drop "
+            "the --no-auto-staff flag."
         )
 
     output.info(
         f"[bold]parallel dispatch[/bold] on {proj.name}: "
         f"[italic]{_truncate(ticket, 80)}[/italic]"
     )
-    output.info("[dim]running Manager to decompose the ticket...[/dim]")
+    if auto_staff:
+        output.info("[dim]running Manager (auto-staff: assign + hire as needed)...[/dim]")
+    else:
+        output.info("[dim]running Manager...[/dim]")
 
     confirm_cb: parallel.ConfirmCallback | None
     if skip_confirm:
@@ -265,6 +277,7 @@ def _dispatch_parallel(
                 make_sub_callback=_make_sub_renderer,
                 fallback_specialist=fallback,
                 confirm=confirm_cb,
+                auto_staff=auto_staff,
             )
         )
     except KeyboardInterrupt:
@@ -281,21 +294,36 @@ def _dispatch_parallel(
         raise typer.Exit(code=1)
 
 
+_STAFFING_LABELS = {
+    "already_assigned": "[dim]assigned[/dim]",
+    "auto_assigned_from_roster": "[cyan]auto-assigned[/cyan]",
+    "auto_hired_from_template": "[bold magenta]auto-hired[/bold magenta]",
+    "fallback": "[yellow]fallback[/yellow]",
+}
+
+
 def _confirm_decomposition(
     decomp: Decomposition,
-    resolved: list[tuple[str, str]],
+    resolved: list[tuple[str, str, str]],
 ) -> bool:
-    """Print the decomposition and ask for y/N confirmation."""
+    """Print the decomposition and ask for y/N confirmation.
+
+    `resolved` rows are (task_id, specialist_name, staffing_action).
+    """
     output.rule("decomposition")
     output.info(f"[bold]kind:[/bold] {decomp.kind.value}    [dim]{decomp.rationale}[/dim]")
     if decomp.contract.needed:
         output.info(f"[bold]contract:[/bold] {decomp.contract.path}")
         output.info(f"[dim]{_truncate(decomp.contract.body, 200)}[/dim]")
 
-    by_task = dict(resolved)
+    by_task = {tid: (name, action) for tid, name, action in resolved}
+    new_hires = [name for _, name, action in resolved if action == "auto_hired_from_template"]
+    auto_assigned = [name for _, name, action in resolved if action == "auto_assigned_from_roster"]
+
     table = Table(show_header=True, header_style="bold")
     table.add_column("task")
     table.add_column("specialist")
+    table.add_column("staffing")
     table.add_column("owns", overflow="fold")
     table.add_column("depends_on")
     table.add_column("turns", justify="right")
@@ -305,15 +333,29 @@ def _confirm_decomposition(
         if t.excludes_paths:
             owns += " [dim](excl: " + ", ".join(t.excludes_paths) + ")[/dim]"
         deps = ", ".join(t.depends_on) if t.depends_on else "[dim]-[/dim]"
+        spec_name, action = by_task.get(t.id, ("[red]?[/red]", "fallback"))
+        staffing_label = _STAFFING_LABELS.get(action, action)
+        if action == "auto_hired_from_template" and t.template_hint:
+            staffing_label += f" [dim](← {t.template_hint})[/dim]"
         table.add_row(
             t.id,
-            by_task.get(t.id, "[red]?[/red]"),
+            spec_name,
+            staffing_label,
             owns,
             deps,
             str(t.estimated_turns),
             _truncate(t.description, 80),
         )
     output.print_table(table)
+
+    if new_hires:
+        output.info(
+            f"[bold magenta]Will hire new specialist(s):[/bold magenta] {', '.join(new_hires)}"
+        )
+    if auto_assigned:
+        output.info(
+            f"[cyan]Will assign existing specialist(s) to this project:[/cyan] {', '.join(auto_assigned)}"
+        )
     if decomp.merge_order:
         output.info(f"[dim]merge order: {' → '.join(decomp.merge_order)}[/dim]")
     output.rule()
