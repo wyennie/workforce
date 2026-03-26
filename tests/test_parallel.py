@@ -20,8 +20,11 @@ from workforce import manager, mission, parallel, runner as runner_mod
 from workforce.manager import Contract, Decomposition, DecompositionKind, Task
 from workforce.mission import MissionMeta, MissionStatus
 from workforce.parallel import (
+    AutoMergeStepResult,
+    MergeStep,
     ParallelStatus,
     ResolutionError,
+    auto_merge,
     dispatch_parallel,
     merge_plan,
     resolve_task_specialists,
@@ -519,3 +522,75 @@ def test_dispatch_parallel_validation_failure(
     # Decomposition was still saved for the user's reference
     parent_dir = mission.mission_paths(proj.id, "m-test-bad").root
     assert (parent_dir / "decomposition.json").is_file()
+
+
+# ----- auto-merge ------------------------------------------------------------
+
+
+def _make_branch(repo: Path, branch: str, file: str, content: str) -> None:
+    """Create a branch off main with one commit modifying `file`."""
+    subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=repo, check=True)
+    (repo / file).write_text(content)
+    subprocess.run(["git", "add", file], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", f"feat: {branch}"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+
+
+def _step(task_id: str, branch: str, status: MissionStatus = MissionStatus.COMPLETED) -> MergeStep:
+    return MergeStep(task_id=task_id, branch=branch, sub_mission_id=f"m__{task_id}", status=status)
+
+
+def test_auto_merge_clean_path(repo: Path) -> None:
+    _make_branch(repo, "wf/a", "a.txt", "hi from a\n")
+    _make_branch(repo, "wf/b", "b.txt", "hi from b\n")
+    plan = [_step("a", "wf/a"), _step("b", "wf/b")]
+    results = auto_merge(repo, plan)
+    assert all(r.success for r in results)
+    assert (repo / "a.txt").read_text() == "hi from a\n"
+    assert (repo / "b.txt").read_text() == "hi from b\n"
+    # Two merge commits on top of main
+    log = subprocess.run(
+        ["git", "log", "--oneline", "main"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert "Merge branch 'wf/a'" in log
+    assert "Merge branch 'wf/b'" in log
+
+
+def test_auto_merge_aborts_on_conflict_and_skips_rest(repo: Path) -> None:
+    """Two branches modifying the same file → second merge conflicts."""
+    _make_branch(repo, "wf/a", "shared.txt", "from a\n")
+    _make_branch(repo, "wf/b", "shared.txt", "from b\n")
+    _make_branch(repo, "wf/c", "c.txt", "fine\n")
+    plan = [_step("a", "wf/a"), _step("b", "wf/b"), _step("c", "wf/c")]
+    results = auto_merge(repo, plan)
+    assert results[0].success
+    assert not results[1].success
+    assert "conflict" in results[1].detail.lower() or "merge error" in results[1].detail.lower()
+    assert not results[2].success
+    assert "skipped" in results[2].detail.lower()
+    # Repo should not be in the middle of an unresolved merge
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert "UU" not in status  # no unmerged paths
+
+
+def test_auto_merge_skips_non_completed_steps(repo: Path) -> None:
+    _make_branch(repo, "wf/a", "a.txt", "hi\n")
+    plan = [
+        _step("a", "wf/a"),
+        _step("b", "wf/b-doesnt-exist", status=MissionStatus.ERROR),
+    ]
+    results = auto_merge(repo, plan)
+    assert results[0].success
+    assert not results[1].success
+    assert "skipped" in results[1].detail.lower()
+
+
+def test_auto_merge_missing_branch_aborts(repo: Path) -> None:
+    plan = [_step("a", "wf/does-not-exist")]
+    results = auto_merge(repo, plan)
+    assert not results[0].success
+    assert "merge error" in results[0].detail.lower() or "conflict" in results[0].detail.lower()

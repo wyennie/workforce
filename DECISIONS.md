@@ -376,3 +376,27 @@ Tracks the planning cost per mission. Lumped into `cost_usd` for the headline nu
 
 ### "Cost" in CLI output is a budget signal, not money
 The SDK reports tokens × API price as the `cost_usd` field. Since we authenticate via the user's `claude` CLI session (which uses their Claude Code subscription quota), this number doesn't directly correspond to dollars billed unless they exceed their plan. We keep the field name as `cost_usd` because it's accurate (it IS the API-equivalent cost) and it's what `--max-cost` caps.
+
+---
+
+## v0.2.3 — `--auto-merge` (2026-05-02)
+
+### Opt-in by default, not opt-out
+`workforce dispatch ... --auto-merge` runs the merge plan against the source repo after a successful mission. Default is OFF. First-time users want to look at the diff before AI work lands; experienced users flip the default in a shell alias. Same logic as why we don't auto-commit inside missions: trust before automation.
+
+### Works for all three dispatch paths
+- **Direct (`--specialist X`):** one-step plan with the single mission's branch.
+- **Manager → single:** same one-step plan; treats Manager's planning pass as having "blessed" the work.
+- **Manager → parallel/sequential:** the existing `merge_plan()` output, executed in order.
+
+### Behavior on conflict
+First non-zero exit from `git merge --no-ff` triggers `git merge --abort` (best-effort, so the source repo isn't left mid-merge) and marks all subsequent steps as `skipped (earlier step failed)`. CLI prints which branch hit the conflict and tells the user to resolve manually. We do NOT attempt to auto-resolve — two LLMs doing 3-way text merges is exactly where small mistakes silently break things.
+
+### Behavior on partial mission success
+If the parent's status is anything other than `completed` (or any sub-mission's status is not `completed`), auto-merge is **skipped entirely**. We don't half-merge a half-failed dispatch. The merge plan is still printed so the user can pick what to keep manually.
+
+### Auto-merge runs in the source repo's current branch
+Whatever branch the source repo is checked out on at merge time is what we merge into. We don't switch branches, don't validate that the current branch is the same as the dispatch-time branch. If the user moved to a different branch between dispatch and completion, `git merge` produces a weird result — that's on them. (Could detect this in v0.3 by comparing `base_sha` to current HEAD's reachable commits.)
+
+### `AutoMergeStepResult` records per-step outcomes
+Returned from `parallel.auto_merge`, printed by the CLI, not yet persisted to `meta.json`. Persist if/when we want post-hoc reporting on auto-merge history. For now the user sees results live and the commit history is the source of truth.

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -534,6 +535,70 @@ class MergeStep:
     branch: str
     sub_mission_id: str
     status: MissionStatus | None
+
+
+@dataclass
+class AutoMergeStepResult:
+    task_id: str
+    branch: str
+    success: bool
+    detail: str   # "merged" / "conflict" / "skipped" / "aborted" / "error: ..."
+
+
+def auto_merge(repo_path: Path, plan: list[MergeStep]) -> list[AutoMergeStepResult]:
+    """Run `git merge --no-ff <branch>` for each step in order against the source repo.
+
+    On the first non-zero exit, aborts the in-progress merge and marks remaining
+    steps as skipped. Steps whose source mission didn't complete cleanly are
+    skipped without running git.
+
+    Returns one AutoMergeStepResult per input step.
+    """
+    results: list[AutoMergeStepResult] = []
+    aborted = False
+    for step in plan:
+        if aborted:
+            results.append(AutoMergeStepResult(
+                task_id=step.task_id, branch=step.branch,
+                success=False, detail="skipped (earlier step failed)",
+            ))
+            continue
+        if step.status is not None and step.status is not MissionStatus.COMPLETED:
+            results.append(AutoMergeStepResult(
+                task_id=step.task_id, branch=step.branch,
+                success=False, detail=f"skipped (sub-mission status: {step.status.value})",
+            ))
+            continue
+        try:
+            r = subprocess.run(
+                ["git", "merge", "--no-ff", step.branch],
+                cwd=repo_path, capture_output=True, text=True, check=False,
+            )
+        except OSError as e:
+            results.append(AutoMergeStepResult(
+                task_id=step.task_id, branch=step.branch,
+                success=False, detail=f"git invoke failed: {e}",
+            ))
+            aborted = True
+            continue
+        if r.returncode == 0:
+            results.append(AutoMergeStepResult(
+                task_id=step.task_id, branch=step.branch,
+                success=True, detail="merged",
+            ))
+        else:
+            # Best-effort abort so the source repo isn't left mid-merge
+            subprocess.run(
+                ["git", "merge", "--abort"],
+                cwd=repo_path, capture_output=True, text=True, check=False,
+            )
+            err = (r.stderr.strip() or r.stdout.strip())[:200]
+            results.append(AutoMergeStepResult(
+                task_id=step.task_id, branch=step.branch,
+                success=False, detail=f"conflict or merge error: {err}",
+            ))
+            aborted = True
+    return results
 
 
 def merge_plan(
