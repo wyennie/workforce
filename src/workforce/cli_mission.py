@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,7 @@ from workforce.parallel import (
 )
 from workforce.runner import RunLimits
 from workforce.specialist import RosterStore
-from workforce.worktree import WorktreeManager
+from workforce.worktree import WorktreeManager, find_workforce_branches
 
 
 def _stores() -> tuple[RosterStore, project_mod.ProjectStore, WorktreeManager]:
@@ -1001,6 +1002,122 @@ def _parse_iso_z(s: str) -> dt.datetime:
     # MissionMeta writes 'YYYY-MM-DDTHH:MM:SSZ' — fromisoformat in 3.11+
     # accepts 'Z' since 3.11. We require 3.11 anyway.
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+# ----- branches sub-typer ---------------------------------------------------
+
+
+branches_sub = typer.Typer(
+    name="branches",
+    help="Inspect and clean up workforce/* branches in a project.",
+    no_args_is_help=True,
+)
+
+
+@branches_sub.command("prune")
+def branches_prune(
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    into: str | None = typer.Option(
+        None, "--into",
+        metavar="BRANCH",
+        help="Compare merge status against this branch. Default: the project's current branch.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="List what would be deleted without changing anything."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Delete merged workforce/* branches (and their worktrees) from a project."""
+    paths.ensure_layout()
+    pstore = project_mod.ProjectStore()
+    try:
+        proj = pstore.resolve(project_ref)
+    except project_mod.ProjectError as e:
+        output.die(str(e))
+
+    repo = Path(proj.repo_path)
+    if not repo.is_dir():
+        output.die(f"project {proj.name!r} repo path missing: {repo}")
+
+    target = into
+    if target is None:
+        # Default: current branch of the source repo.
+        target = parallel._current_branch(repo)
+        if target is None:
+            output.die(
+                "could not determine current branch (detached HEAD?). "
+                "Pass --into BRANCH explicitly."
+            )
+
+    try:
+        merged = find_workforce_branches(repo, merged_into=target)
+    except subprocess.CalledProcessError as e:
+        output.die(f"git failed: {e}")
+
+    if not merged:
+        output.info(
+            f"no merged workforce/* branches in {proj.name} "
+            f"(checked against {target!r})"
+        )
+        return
+
+    output.info(f"merged into {target!r} and ready to delete:")
+    for b in merged:
+        output.info(f"  {b}")
+
+    if dry_run:
+        output.info("[dim](dry-run — nothing changed)[/dim]")
+        return
+
+    if not yes:
+        confirm = typer.confirm(
+            f"Delete {len(merged)} branch(es) and their worktrees?", default=False
+        )
+        if not confirm:
+            output.info("aborted")
+            raise typer.Exit()
+
+    wm = WorktreeManager()
+    deleted: list[str] = []
+    skipped: list[tuple[str, str]] = []
+
+    for branch in merged:
+        # Find any worktree currently holding this branch and remove it first.
+        for entry in wm.list_git_worktrees(repo):
+            if entry.branch == f"refs/heads/{branch}":
+                try:
+                    wm.remove(repo, entry.path, force=True)
+                except Exception as e:
+                    skipped.append((branch, f"worktree removal failed: {e}"))
+                    break
+        else:
+            # No matching worktree — proceed straight to branch deletion.
+            pass
+
+        # If we hit a worktree-removal error above, we should have continued
+        # to the next branch. Use a sentinel by checking skipped.
+        if skipped and skipped[-1][0] == branch:
+            continue
+
+        try:
+            r = subprocess.run(
+                ["git", "branch", "-d", branch],
+                cwd=repo, capture_output=True, text=True, check=False,
+            )
+        except OSError as e:
+            skipped.append((branch, f"git invoke failed: {e}"))
+            continue
+        if r.returncode == 0:
+            deleted.append(branch)
+        else:
+            err = (r.stderr.strip() or r.stdout.strip())[:200]
+            skipped.append((branch, err))
+
+    for b in deleted:
+        output.success(f"deleted {b}")
+    for b, why in skipped:
+        output.warn(f"skipped {b}: {why}")
+    output.info(f"pruned {len(deleted)} of {len(merged)} branch(es)")
 
 
 @mission_sub.command("prune")

@@ -53,6 +53,29 @@ def has_commits(repo_path: Path) -> bool:
     return result.returncode == 0
 
 
+def find_workforce_branches(repo_path: Path, *, merged_into: str | None = None) -> list[str]:
+    """List `workforce/*` branches in `repo_path`.
+
+    If `merged_into` is given, return only those whose tip is reachable from
+    that branch (i.e. fully merged). If None, return all `workforce/*` branches.
+    """
+    args = ["branch", "--list", f"{BRANCH_PREFIX}*"]
+    if merged_into is not None:
+        args.insert(1, "--merged")
+        args.insert(2, merged_into)
+    out = subprocess.run(
+        ["git", *args],
+        cwd=repo_path, capture_output=True, text=True, check=True,
+    ).stdout
+    branches: list[str] = []
+    for line in out.splitlines():
+        # `git branch` prefixes with "* " (current), "+ " (worktree), or "  "
+        name = line.lstrip("*+ ").strip()
+        if name.startswith(BRANCH_PREFIX):
+            branches.append(name)
+    return sorted(branches)
+
+
 @dataclass(frozen=True)
 class WorktreeRef:
     repo_path: Path

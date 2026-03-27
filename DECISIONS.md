@@ -400,3 +400,28 @@ Whatever branch the source repo is checked out on at merge time is what we merge
 
 ### `AutoMergeStepResult` records per-step outcomes
 Returned from `parallel.auto_merge`, printed by the CLI, not yet persisted to `meta.json`. Persist if/when we want post-hoc reporting on auto-merge history. For now the user sees results live and the commit history is the source of truth.
+
+---
+
+## v0.2.4 — `workforce branches prune` (2026-05-02)
+
+Branches accumulate. After 5-10 missions on a project, `git branch -l` shows a wall of `workforce/m-*` entries. New command:
+
+```
+workforce branches prune <project> [--into BRANCH] [--dry-run] [-y]
+```
+
+### Implementation: `git branch --merged <target>`
+Uses git's native merge-detection. `find_workforce_branches(repo, merged_into="main")` returns only branches whose tip is reachable from `main`. We don't try to interpret merge commits or rewrite-detect — git's `--merged` is the source of truth.
+
+### Default target: current branch
+Most users review-and-merge into main, so by the time they prune they're on main. If they're on a feature branch, that's where their work landed. Current branch is the most defensible default. `--into BRANCH` overrides explicitly.
+
+### Worktree cleanup is automatic
+For each branch about to be deleted, scan `git worktree list --porcelain`; if a worktree is holding it, `git worktree remove --force` first. Otherwise `git branch -d` would refuse ("branch is checked out elsewhere"). User doesn't need to think about it — branches and their worktrees are pruned together.
+
+### Mission artifacts are NOT touched
+`workforce branches prune` only touches branches + worktrees. Mission directories (events.jsonl, meta.json, result.md) stay so `mission show` and `replay` keep working forever. Different lifecycle: branches are cheap to recreate from the meta if needed; mission history is the canonical record.
+
+### Why a separate command vs. extending `mission prune`
+`mission prune` is age-based (`--older-than 30d`), `branches prune` is merge-based. Different criteria, different defaults, different blast radius. Mixing them under one command would mean ambiguous semantics. Two small commands beat one confusing one.

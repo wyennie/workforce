@@ -12,6 +12,7 @@ from workforce.worktree import (
     UnbornRepoError,
     WorktreeError,
     WorktreeManager,
+    find_workforce_branches,
     has_commits,
 )
 
@@ -114,6 +115,46 @@ def test_has_commits_false_when_unborn(tmp_path: Path) -> None:
     r.mkdir()
     _run(["git", "init", "-q", "-b", "main"], r)
     assert has_commits(r) is False
+
+
+# ----- find_workforce_branches ---------------------------------------------
+
+
+def test_find_workforce_branches_lists_all(repo: Path, manager: WorktreeManager) -> None:
+    manager.create(repo, PROJECT_ID, "m001")
+    manager.create(repo, PROJECT_ID, "m002")
+    # Create a non-workforce branch too — should be ignored
+    _run(["git", "branch", "feature-x"], repo)
+    branches = find_workforce_branches(repo)
+    assert branches == [
+        f"{BRANCH_PREFIX}m001",
+        f"{BRANCH_PREFIX}m002",
+    ]
+
+
+def test_find_workforce_branches_filters_to_merged(repo: Path, manager: WorktreeManager) -> None:
+    """Only branches reachable from the target are returned."""
+    # Create two workforce branches with a commit each
+    ref_a = manager.create(repo, PROJECT_ID, "m001")
+    (ref_a.worktree_path / "a.txt").write_text("a\n")
+    _run(["git", "add", "a.txt"], ref_a.worktree_path)
+    _run(["git", "commit", "-q", "-m", "feat: a"], ref_a.worktree_path)
+
+    ref_b = manager.create(repo, PROJECT_ID, "m002")
+    (ref_b.worktree_path / "b.txt").write_text("b\n")
+    _run(["git", "add", "b.txt"], ref_b.worktree_path)
+    _run(["git", "commit", "-q", "-m", "feat: b"], ref_b.worktree_path)
+
+    # Merge only m001 into main
+    _run(["git", "merge", "--no-ff", ref_a.branch], repo)
+
+    merged = find_workforce_branches(repo, merged_into="main")
+    assert ref_a.branch in merged
+    assert ref_b.branch not in merged
+
+
+def test_find_workforce_branches_empty_when_none_exist(repo: Path) -> None:
+    assert find_workforce_branches(repo) == []
 
 
 def test_create_refuses_existing_path(repo: Path, manager: WorktreeManager) -> None:
