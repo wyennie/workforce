@@ -190,19 +190,16 @@ def test_validate_merge_order_violates_dependency() -> None:
         validate_decomposition(d)
 
 
-def test_validate_specialist_not_in_roster() -> None:
+def test_validate_does_not_enforce_specialist_existence() -> None:
+    """Specialist resolution is the resolver's job (it can auto-staff).
+
+    Validator must not reject decompositions just because the Manager
+    suggested a name not yet in the project's roster.
+    """
     d = _build(
         Task(id="a", description="x", suggested_specialist="ghost"),
     )
-    with pytest.raises(ValidationError, match="suggests specialist"):
-        validate_decomposition(d, available_specialists=["aria", "ben"])
-
-
-def test_validate_specialist_in_roster_ok() -> None:
-    d = _build(
-        Task(id="a", description="x", suggested_specialist="aria"),
-    )
-    validate_decomposition(d, available_specialists=["aria", "ben"])
+    validate_decomposition(d, available_specialists=["aria", "ben"])  # no raise
 
 
 # ----- Path overlap (real filesystem) ---------------------------------------

@@ -221,11 +221,21 @@ def _staff_one_task(
         return roster_store.load(only), "fallback", False
 
     # 6. Out of options.
+    if name and not roster_store.exists(name) and not task.template_hint:
+        # Common case: Manager suggested a new name but didn't tell us how
+        # to hire from a template.
+        raise ResolutionError(
+            f"task {task.id!r}: Manager suggested specialist {name!r} which "
+            "doesn't exist, and didn't provide a `template_hint`. Either:\n"
+            f"  - re-run dispatch (Manager may pick a different name), or\n"
+            f"  - hire it manually first: workforce hire {name} --from-template <backend|frontend|tester|reviewer|generalist>\n"
+            f"  - assign an existing specialist to the project"
+        )
     raise ResolutionError(
         f"task {task.id!r}: cannot resolve specialist (suggested={name!r}, "
         f"template_hint={task.template_hint!r}, assigned to project: "
         f"{', '.join(sorted(assigned)) or 'none'}). "
-        f"Hint: pass --fallback or assign specialists to the project."
+        f"Either assign specialists to the project or re-run dispatch."
     )
 
 

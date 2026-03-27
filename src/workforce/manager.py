@@ -339,16 +339,13 @@ def validate_decomposition(
     if decomp.kind is DecompositionKind.PARALLEL:
         _check_parallel_overlap(decomp, repo_path)
 
-    # Specialist existence
-    if available_specialists is not None:
-        roster = set(available_specialists)
-        for t in decomp.tasks:
-            if t.suggested_specialist and t.suggested_specialist not in roster:
-                raise ValidationError(
-                    f"task {t.id!r} suggests specialist "
-                    f"{t.suggested_specialist!r} which isn't assigned to this "
-                    f"project (have: {', '.join(sorted(roster)) or 'none'})"
-                )
+    # Note: we deliberately do NOT validate that suggested specialists exist
+    # in the roster here — auto-staff (parallel.resolve_task_specialists)
+    # handles missing names by either auto-assigning from the global roster
+    # or auto-hiring from `template_hint`. The resolver raises a clear
+    # ResolutionError if it can't satisfy a task. Putting the check here too
+    # would block legitimate auto-hire cases.
+    _ = available_specialists  # parameter retained for backwards-compat
 
 
 def _topological_sort(tasks: list[Task]) -> list[str]:
