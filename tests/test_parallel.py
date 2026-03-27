@@ -21,10 +21,12 @@ from workforce.manager import Contract, Decomposition, DecompositionKind, Task
 from workforce.mission import MissionMeta, MissionStatus
 from workforce.parallel import (
     AutoMergeStepResult,
+    MergePreflightError,
     MergeStep,
     ParallelStatus,
     ResolutionError,
     auto_merge,
+    auto_merge_into,
     dispatch_parallel,
     merge_plan,
     resolve_task_specialists,
@@ -594,3 +596,59 @@ def test_auto_merge_missing_branch_aborts(repo: Path) -> None:
     results = auto_merge(repo, plan)
     assert not results[0].success
     assert "merge error" in results[0].detail.lower() or "conflict" in results[0].detail.lower()
+
+
+# ----- auto_merge_into ------------------------------------------------------
+
+
+def test_auto_merge_into_explicit_target(repo: Path) -> None:
+    """User is on a feature branch; merge into main explicitly."""
+    _make_branch(repo, "wf/a", "a.txt", "from a\n")
+    subprocess.run(["git", "checkout", "-q", "-b", "feature-x"], cwd=repo, check=True)
+    plan = [_step("a", "wf/a")]
+    results = auto_merge_into(repo, plan, target_branch="main")
+    assert all(r.success for r in results)
+    # Should now be on main with the merged work
+    cur = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert cur == "main"
+    assert (repo / "a.txt").read_text() == "from a\n"
+    # feature-x should NOT have the merge
+    subprocess.run(["git", "checkout", "-q", "feature-x"], cwd=repo, check=True)
+    assert not (repo / "a.txt").exists()
+
+
+def test_auto_merge_into_target_missing(repo: Path) -> None:
+    plan = [_step("a", "wf/a")]
+    with pytest.raises(MergePreflightError, match="doesn't exist"):
+        auto_merge_into(repo, plan, target_branch="no-such-branch")
+
+
+def test_auto_merge_into_refuses_dirty_source(repo: Path) -> None:
+    _make_branch(repo, "wf/a", "a.txt", "from a\n")
+    # Stage a change in main
+    (repo / "main.txt").write_text("dirty\n")
+    subprocess.run(["git", "add", "main.txt"], cwd=repo, check=True)
+    plan = [_step("a", "wf/a")]
+    with pytest.raises(MergePreflightError, match="uncommitted"):
+        auto_merge_into(repo, plan, target_branch="main")
+
+
+def test_auto_merge_into_tolerates_untracked(repo: Path) -> None:
+    """Untracked files don't block — same policy as worktree manager."""
+    _make_branch(repo, "wf/a", "a.txt", "from a\n")
+    (repo / "scratch.txt").write_text("local")
+    plan = [_step("a", "wf/a")]
+    results = auto_merge_into(repo, plan, target_branch="main")
+    assert all(r.success for r in results)
+
+
+def test_auto_merge_into_already_on_target(repo: Path) -> None:
+    """Already on the target branch — no switch needed."""
+    _make_branch(repo, "wf/a", "a.txt", "from a\n")
+    # We're already on main from the fixture
+    plan = [_step("a", "wf/a")]
+    results = auto_merge_into(repo, plan, target_branch="main")
+    assert all(r.success for r in results)

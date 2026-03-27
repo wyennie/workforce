@@ -161,7 +161,13 @@ def dispatch_command(
     auto_merge: bool = typer.Option(
         False,
         "--auto-merge/--no-auto-merge",
-        help="After successful completion, run the merge plan against the source repo. Aborts on conflict. Default off.",
+        help="After successful completion, run the merge plan against the source repo's current branch. Aborts on conflict.",
+    ),
+    merge_into: str | None = typer.Option(
+        None,
+        "--merge-into",
+        metavar="BRANCH",
+        help="After successful completion, switch to BRANCH and merge there. Implies --auto-merge with an explicit target.",
     ),
     max_turns: int = typer.Option(50, "--max-turns", help="Hard cap on assistant turns per sub-mission."),
     max_cost: float = typer.Option(5.0, "--max-cost", help="Hard cap on cost (USD) per sub-mission."),
@@ -209,7 +215,8 @@ def dispatch_command(
         _dispatch_direct(
             proj, ticket, roster_store.load(specialist),
             roster_store, project_store, worktree_manager, limits,
-            auto_merge=auto_merge,
+            auto_merge=auto_merge or merge_into is not None,
+            merge_into=merge_into,
         )
         return
 
@@ -217,7 +224,8 @@ def dispatch_command(
     _dispatch_with_manager(
         proj, ticket, roster_store, project_store, worktree_manager,
         limits=limits, skip_confirm=yes, auto_staff=auto_staff,
-        auto_merge=auto_merge,
+        auto_merge=auto_merge or merge_into is not None,
+        merge_into=merge_into,
     )
 
 
@@ -231,6 +239,7 @@ def _dispatch_direct(
     limits: RunLimits,
     *,
     auto_merge: bool = False,
+    merge_into: str | None = None,
 ) -> None:
     """Single specialist, no Manager. The --specialist X bypass."""
     output.info(
@@ -253,7 +262,7 @@ def _dispatch_direct(
     output.rule()
     _print_summary(meta)
     if auto_merge:
-        _run_auto_merge_single(proj, meta)
+        _run_auto_merge_single(proj, meta, target=merge_into)
     if meta.status is not MissionStatus.COMPLETED:
         raise typer.Exit(code=1)
 
@@ -272,6 +281,7 @@ def _dispatch_with_manager(
     skip_confirm: bool,
     auto_staff: bool,
     auto_merge: bool = False,
+    merge_into: str | None = None,
 ) -> None:
     """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
@@ -313,14 +323,15 @@ def _dispatch_with_manager(
         _dispatch_after_manager_single(
             proj, ticket, decomp, manager_cost,
             roster_store, project_store, worktree_manager,
-            limits=limits, auto_staff=auto_staff, auto_merge=auto_merge,
+            limits=limits, auto_staff=auto_staff,
+            auto_merge=auto_merge, merge_into=merge_into,
         )
     else:
         _dispatch_after_manager_parallel(
             proj, ticket, decomp, manager_cost,
             roster_store, project_store, worktree_manager,
             limits=limits, skip_confirm=skip_confirm, auto_staff=auto_staff,
-            auto_merge=auto_merge,
+            auto_merge=auto_merge, merge_into=merge_into,
         )
 
 
@@ -336,6 +347,7 @@ def _dispatch_after_manager_single(
     limits: RunLimits,
     auto_staff: bool,
     auto_merge: bool = False,
+    merge_into: str | None = None,
 ) -> None:
     """Manager said single. Use its specialist suggestion, dispatch one mission."""
     if not decomp.tasks:
@@ -392,7 +404,7 @@ def _dispatch_after_manager_single(
     output.rule()
     _print_summary(meta)
     if auto_merge:
-        _run_auto_merge_single(proj, meta)
+        _run_auto_merge_single(proj, meta, target=merge_into)
     if meta.status is not MissionStatus.COMPLETED:
         raise typer.Exit(code=1)
 
@@ -410,6 +422,7 @@ def _dispatch_after_manager_parallel(
     skip_confirm: bool,
     auto_staff: bool,
     auto_merge: bool = False,
+    merge_into: str | None = None,
 ) -> None:
     """Manager said parallel/sequential. Hand off to the parallel orchestrator."""
     confirm_cb: parallel.ConfirmCallback | None
@@ -448,7 +461,7 @@ def _dispatch_after_manager_parallel(
     _print_merge_plan(result.parent_meta, result.sub_metas)
 
     if auto_merge:
-        _run_auto_merge_parallel(proj, result.parent_meta, result.sub_metas)
+        _run_auto_merge_parallel(proj, result.parent_meta, result.sub_metas, target=merge_into)
 
     if result.parent_meta.status is not ParallelStatus.COMPLETED:
         raise typer.Exit(code=1)
@@ -604,7 +617,12 @@ def _print_parallel_summary(parent: ParallelMissionMeta, subs: list[MissionMeta]
 # ----- auto-merge -----------------------------------------------------------
 
 
-def _run_auto_merge_single(proj: project_mod.Project, meta: MissionMeta) -> None:
+def _run_auto_merge_single(
+    proj: project_mod.Project,
+    meta: MissionMeta,
+    *,
+    target: str | None = None,
+) -> None:
     if meta.status is not MissionStatus.COMPLETED:
         output.warn("auto-merge skipped: mission did not complete cleanly")
         return
@@ -612,13 +630,15 @@ def _run_auto_merge_single(proj: project_mod.Project, meta: MissionMeta) -> None
         task_id="single", branch=meta.branch,
         sub_mission_id=meta.mission_id, status=meta.status,
     )]
-    _execute_auto_merge(proj, plan)
+    _execute_auto_merge(proj, plan, target=target)
 
 
 def _run_auto_merge_parallel(
     proj: project_mod.Project,
     parent: ParallelMissionMeta,
     subs: list[MissionMeta],
+    *,
+    target: str | None = None,
 ) -> None:
     if parent.status is not ParallelStatus.COMPLETED:
         output.warn(
@@ -627,16 +647,29 @@ def _run_auto_merge_parallel(
         )
         return
     plan = parallel.merge_plan(parent, subs)
-    _execute_auto_merge(proj, plan)
+    _execute_auto_merge(proj, plan, target=target)
 
 
 def _execute_auto_merge(
     proj: project_mod.Project,
     plan: list[parallel.MergeStep],
+    *,
+    target: str | None,
 ) -> None:
     output.rule("auto-merge")
-    output.info(f"merging into {proj.repo_path}...")
-    results = parallel.auto_merge(Path(proj.repo_path), plan)
+    repo = Path(proj.repo_path)
+    if target is not None:
+        output.info(f"merging into {target!r} branch in {proj.repo_path}...")
+        try:
+            results = parallel.auto_merge_into(repo, plan, target_branch=target)
+        except parallel.MergePreflightError as e:
+            output.fail(f"auto-merge preflight failed: {e}")
+            return
+    else:
+        cur = parallel._current_branch(repo) or "HEAD"
+        output.info(f"merging into current branch ({cur}) of {proj.repo_path}...")
+        results = parallel.auto_merge(repo, plan)
+
     succeeded = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
     for r in results:
