@@ -48,7 +48,13 @@ from workforce.parallel import (
 )
 from workforce.runner import RunLimits
 from workforce.specialist import RosterStore
-from workforce.worktree import WorktreeManager, find_workforce_branches
+from workforce.worktree import (
+    WorktreeError,
+    WorktreeManager,
+    find_workforce_branches,
+    has_commits,
+    is_repo_clean,
+)
 
 
 def _stores() -> tuple[RosterStore, project_mod.ProjectStore, WorktreeManager]:
@@ -194,10 +200,26 @@ def dispatch_command(
     except project_mod.ProjectError as e:
         output.die(str(e))
 
-    if not Path(proj.repo_path).is_dir():
+    repo_path = Path(proj.repo_path)
+    if not repo_path.is_dir():
         output.die(
             f"project {proj.name!r} points at {proj.repo_path}, which is missing. "
             "Did you move the repo?"
+        )
+
+    # Preflight: the source repo needs at least one commit and a clean tree.
+    # Cheap to check, expensive to discover after the Manager has run.
+    if not has_commits(repo_path):
+        output.die(
+            f"{proj.repo_path} has no commits yet. Run "
+            f"`git -C {proj.repo_path} commit --allow-empty -m initial` first."
+        )
+    clean, dirty_paths = is_repo_clean(repo_path)
+    if not clean:
+        preview = ", ".join(dirty_paths[:3]) + ("..." if len(dirty_paths) > 3 else "")
+        output.die(
+            f"{proj.repo_path} has uncommitted changes ({preview}). "
+            "Commit or stash before dispatching. (Untracked files are OK.)"
         )
 
     limits = RunLimits(
@@ -260,6 +282,8 @@ def _dispatch_direct(
     except KeyboardInterrupt:
         output.warn("interrupted")
         raise typer.Exit(code=130)
+    except WorktreeError as e:
+        output.die(str(e))
     output.rule()
     _print_summary(meta)
     if auto_merge:
@@ -402,6 +426,8 @@ def _dispatch_after_manager_single(
     except KeyboardInterrupt:
         output.warn("interrupted")
         raise typer.Exit(code=130)
+    except WorktreeError as e:
+        output.die(str(e))
     output.rule()
     _print_summary(meta)
     if auto_merge:
@@ -450,7 +476,7 @@ def _dispatch_after_manager_parallel(
     except KeyboardInterrupt:
         output.warn("interrupted")
         raise typer.Exit(code=130)
-    except (ValidationError, ResolutionError) as e:
+    except (ValidationError, ResolutionError, WorktreeError) as e:
         output.die(str(e))
 
     # Patch in the manager_cost we already paid (parallel.dispatch_parallel

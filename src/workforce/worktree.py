@@ -53,6 +53,24 @@ def has_commits(repo_path: Path) -> bool:
     return result.returncode == 0
 
 
+def is_repo_clean(repo_path: Path) -> tuple[bool, list[str]]:
+    """True iff the repo has no staged/modified files (untracked OK).
+
+    Returns (clean?, list of dirty paths). The dirty list is for the caller
+    to surface in error messages — same policy as worktree creation.
+    """
+    out = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_path, capture_output=True, text=True, check=True,
+    ).stdout
+    dirty: list[str] = []
+    for line in out.splitlines():
+        if not line or line.startswith("??"):
+            continue
+        dirty.append(line[3:])
+    return (not dirty, dirty)
+
+
 def find_workforce_branches(repo_path: Path, *, merged_into: str | None = None) -> list[str]:
     """List `workforce/*` branches in `repo_path`.
 

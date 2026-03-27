@@ -14,6 +14,7 @@ from workforce.worktree import (
     WorktreeManager,
     find_workforce_branches,
     has_commits,
+    is_repo_clean,
 )
 
 
@@ -155,6 +156,37 @@ def test_find_workforce_branches_filters_to_merged(repo: Path, manager: Worktree
 
 def test_find_workforce_branches_empty_when_none_exist(repo: Path) -> None:
     assert find_workforce_branches(repo) == []
+
+
+# ----- is_repo_clean --------------------------------------------------------
+
+
+def test_is_repo_clean_after_commit(repo: Path) -> None:
+    clean, dirty = is_repo_clean(repo)
+    assert clean is True
+    assert dirty == []
+
+
+def test_is_repo_clean_with_modified_file(repo: Path) -> None:
+    (repo / "README.md").write_text("# changed\n")
+    clean, dirty = is_repo_clean(repo)
+    assert clean is False
+    assert "README.md" in dirty
+
+
+def test_is_repo_clean_tolerates_untracked(repo: Path) -> None:
+    (repo / "scratch.txt").write_text("local")
+    clean, dirty = is_repo_clean(repo)
+    assert clean is True
+    assert dirty == []
+
+
+def test_is_repo_clean_with_staged_file(repo: Path) -> None:
+    (repo / "new.txt").write_text("hi")
+    _run(["git", "add", "new.txt"], repo)
+    clean, dirty = is_repo_clean(repo)
+    assert clean is False
+    assert "new.txt" in dirty
 
 
 def test_create_refuses_existing_path(repo: Path, manager: WorktreeManager) -> None:
