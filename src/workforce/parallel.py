@@ -69,6 +69,7 @@ class SubMissionRef(BaseModel):
     mission_id: str
     specialist: str
     status: MissionStatus | None = None  # None = not yet run
+    out_of_lane_files: list[str] = Field(default_factory=list)
 
 
 class ParallelMissionMeta(BaseModel):
@@ -471,8 +472,28 @@ async def dispatch_parallel(
 
     # ---- 7. Final parent meta ----
     sub_status_by_id = {m.mission_id: m.status for m in sub_metas}
+    sub_meta_by_id = {m.mission_id: m for m in sub_metas}
+    resolved_by_sub_id = {r.sub_mission_id: r for r in resolved}
     for ref in sub_refs:
         ref.status = sub_status_by_id.get(ref.mission_id)
+        # Audit ownership for completed sub-missions only.
+        sm = sub_meta_by_id.get(ref.mission_id)
+        rt = resolved_by_sub_id.get(ref.mission_id)
+        if (
+            sm is not None
+            and rt is not None
+            and sm.status is MissionStatus.COMPLETED
+        ):
+            try:
+                ref.out_of_lane_files = manager.audit_ownership(
+                    Path(sm.worktree_path),
+                    sm.base_sha,
+                    rt.task.owns_paths,
+                    rt.task.excludes_paths,
+                )
+            except Exception:
+                # Audit failure shouldn't crash dispatch; just leave it empty.
+                ref.out_of_lane_files = []
     parent_meta.sub_missions = sub_refs
     parent_meta.status = _aggregate_status(sub_metas)
     parent_meta.ended_at = _now_iso()

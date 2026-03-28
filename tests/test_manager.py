@@ -13,6 +13,7 @@ from workforce.manager import (
     ManagerError,
     Task,
     ValidationError,
+    audit_ownership,
     parse_decomposition,
     validate_decomposition,
 )
@@ -288,3 +289,99 @@ def test_validate_overlap_only_for_parallel(repo: Path) -> None:
         merge_order=["a", "b"],
     )
     validate_decomposition(d, repo_path=repo)  # no raise
+
+
+# ----- audit_ownership ------------------------------------------------------
+
+
+import subprocess
+
+
+@pytest.fixture
+def worktree_repo(tmp_path: Path) -> Path:
+    """Tiny git repo with one initial commit. Use as a 'worktree' for audit tests."""
+    r = tmp_path / "wt"
+    r.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=r, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=r, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=r, check=True)
+    (r / "README.md").write_text("# r\n")
+    subprocess.run(["git", "add", "README.md"], cwd=r, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=r, check=True)
+    return r
+
+
+def _commit_files(repo: Path, *files_with_content: tuple[str, str]) -> str:
+    for path, content in files_with_content:
+        full = repo / path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(content)
+        subprocess.run(["git", "add", path], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat"], cwd=repo, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def test_audit_clean_when_in_lane(worktree_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree_repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    _commit_files(worktree_repo, ("src/auth/session.py", "x"), ("src/auth/__init__.py", ""))
+    violations = audit_ownership(worktree_repo, base, ["src/auth/**"], [])
+    assert violations == []
+
+
+def test_audit_flags_out_of_lane(worktree_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree_repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    # Specialist owns src/auth/** but also wrote a package.json at the root
+    _commit_files(
+        worktree_repo,
+        ("src/auth/session.py", "x"),
+        ("package.json", "{}"),
+    )
+    violations = audit_ownership(worktree_repo, base, ["src/auth/**"], [])
+    assert violations == ["package.json"]
+
+
+def test_audit_respects_excludes(worktree_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree_repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    _commit_files(
+        worktree_repo,
+        ("src/auth/session.py", "x"),       # in lane
+        ("src/api/routes.py", "y"),         # in lane (src/**)
+        ("src/auth/secret.py", "z"),        # excluded
+    )
+    violations = audit_ownership(
+        worktree_repo, base,
+        owns_paths=["src/**"], excludes_paths=["src/auth/secret.py"],
+    )
+    # secret.py is excluded → it's out-of-lane (specialist shouldn't have written it)
+    assert violations == ["src/auth/secret.py"]
+
+
+def test_audit_empty_owns_means_everything_is_out_of_lane(worktree_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree_repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    _commit_files(worktree_repo, ("a.txt", "x"), ("b.txt", "y"))
+    violations = audit_ownership(worktree_repo, base, [], [])
+    assert sorted(violations) == ["a.txt", "b.txt"]
+
+
+def test_audit_no_changes_returns_empty(worktree_repo: Path) -> None:
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=worktree_repo,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    # No new commits
+    assert audit_ownership(worktree_repo, base, ["src/**"], []) == []

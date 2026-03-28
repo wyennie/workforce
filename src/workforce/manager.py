@@ -138,6 +138,33 @@ that creates merge headaches.
 - For `single`, produce one task in `tasks` with the full ticket as its
   description, and no contract.
 
+## Shared files: one owner, never two
+
+Some files are needed by multiple domains: `package.json`, `tsconfig.json`,
+`.env.example`, `.gitignore`, `docker-compose.yml`, top-level configs,
+shared `__init__.py` or `index.ts` re-export hubs. **Each such file
+belongs to exactly ONE task.** Other tasks must NOT create or modify it,
+even though they may need it to exist.
+
+Concretely:
+- Pick the task whose domain "owns" the file (e.g., `client/package.json`
+  goes to the frontend task; `server/package.json` goes to the backend
+  task; root-level `package.json` goes to whichever task sets up the
+  workspace, often a separate "scaffold").
+- Add the file explicitly to that task's `owns_paths`.
+- In OTHER tasks' descriptions, mention "the X task owns Y; you can read
+  it but do not create or modify it." This sets expectations.
+
+If multiple tasks genuinely need to bootstrap shared infrastructure
+(monorepo workspace, shared TypeScript types module, etc.), give that
+infrastructure its OWN task and have the others `depends_on` it. That's
+what `kind: sequential` is for. Don't try to parallelize work that needs
+shared scaffolding to exist first.
+
+The most common bug in a parallel decomposition is two specialists each
+creating their own version of `package.json` (or similar). Workforce will
+flag this post-hoc, but it's better to prevent it here.
+
 ## Picking specialists
 
 You'll be told which specialists are already assigned to this project, with
@@ -435,6 +462,54 @@ def _resolve_paths(repo: Path, owns: list[str], excludes: list[str]) -> set[Path
         for p in repo.glob(pattern):
             matched.discard(p.resolve())
     return matched
+
+
+# ----- Post-mission ownership audit -----------------------------------------
+
+
+def audit_ownership(
+    worktree: Path,
+    base_sha: str,
+    owns_paths: list[str],
+    excludes_paths: list[str],
+) -> list[str]:
+    """Return files this sub-mission touched that aren't in its declared lane.
+
+    Compares files changed in `base_sha..HEAD` against the union of `owns_paths`
+    minus `excludes_paths` (resolved as globs against the worktree). Empty list
+    means the specialist stayed in their lane.
+
+    Empty `owns_paths` means everything is out-of-lane (the Manager forgot to
+    declare ownership). Empty changed set means nothing to audit.
+    """
+    import subprocess as _sp
+    out = _sp.run(
+        ["git", "diff", "--name-only", f"{base_sha}..HEAD"],
+        cwd=worktree, capture_output=True, text=True, check=True,
+    ).stdout
+    changed = [line for line in out.splitlines() if line.strip()]
+    if not changed:
+        return []
+
+    if not owns_paths:
+        # Nothing declared as owned → everything written is out-of-lane.
+        return sorted(changed)
+
+    in_lane: set[str] = set()
+    for pattern in owns_paths:
+        for p in worktree.glob(pattern):
+            if p.is_file():
+                try:
+                    in_lane.add(str(p.relative_to(worktree)))
+                except ValueError:
+                    continue
+    for pattern in excludes_paths:
+        for p in worktree.glob(pattern):
+            try:
+                in_lane.discard(str(p.relative_to(worktree)))
+            except ValueError:
+                continue
+    return sorted(f for f in changed if f not in in_lane)
 
 
 # ----- Run ------------------------------------------------------------------

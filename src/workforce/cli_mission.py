@@ -485,6 +485,7 @@ def _dispatch_after_manager_parallel(
 
     output.rule()
     _print_parallel_summary(result.parent_meta, result.sub_metas)
+    _print_ownership_audit(result.parent_meta)
     _print_merge_plan(result.parent_meta, result.sub_metas)
 
     if auto_merge:
@@ -711,6 +712,26 @@ def _execute_auto_merge(
         )
     else:
         output.success(f"auto-merge: all {len(succeeded)} branch(es) merged")
+
+
+def _print_ownership_audit(parent: ParallelMissionMeta) -> None:
+    """If any sub wrote outside its declared lane, warn loudly before merge."""
+    drifters = [(s.task_id, s.out_of_lane_files) for s in parent.sub_missions if s.out_of_lane_files]
+    if not drifters:
+        return
+    output.rule("decomposition drift")
+    output.warn(
+        "Specialists wrote files outside their declared owns_paths. "
+        "This is the most common cause of merge conflicts — review carefully:"
+    )
+    for task_id, files in drifters:
+        preview = ", ".join(files[:5])
+        more = f" (+{len(files) - 5} more)" if len(files) > 5 else ""
+        output.warn(f"  [bold]{task_id}[/bold] wrote: {preview}{more}")
+    output.info(
+        "[dim]If two tasks wrote the same file, expect a conflict at merge time. "
+        "Run `workforce mission show <parent-id>` for full details.[/dim]"
+    )
 
 
 def _print_merge_plan(parent: ParallelMissionMeta, subs: list[MissionMeta]) -> None:
@@ -1079,6 +1100,19 @@ def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) ->
                 )
         output.print_table(stable)
         output.info(f"  total cost (manager + subs): ${total_cost:.4f}")
+
+    drifters = [(s.task_id, s.out_of_lane_files) for s in parent.sub_missions if s.out_of_lane_files]
+    if drifters:
+        atable = Table(show_header=True, header_style="bold")
+        atable.add_column("task")
+        atable.add_column("files written outside owns_paths", overflow="fold")
+        for task_id, files in drifters:
+            atable.add_row(task_id, "\n".join(files))
+        output.raw(Panel(
+            atable,
+            title="[red]decomposition drift[/red]",
+            title_align="left",
+        ))
 
 
 @mission_sub.command("clean")
