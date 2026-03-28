@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -10,7 +12,11 @@ from rich.table import Table
 
 from workforce import output, paths, project
 from workforce.specialist import RosterStore
-from workforce.worktree import has_commits
+from workforce.worktree import (
+    WorktreeManager,
+    find_workforce_branches,
+    has_commits,
+)
 
 
 sub = typer.Typer(
@@ -196,6 +202,130 @@ def show(project_ref: str = typer.Argument(..., help="Project name or id.", meta
     meta.add_row("recorded missions", str(n_missions))
 
     output.raw(Panel(meta, title=f"project: {proj.name}", title_align="left"))
+
+
+@sub.command("nuke")
+def nuke(
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    also_memory: bool = typer.Option(
+        False, "--also-memory",
+        help="Also delete per-specialist project memory files. Default: keep memory.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be deleted, change nothing.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Wipe all branches, worktrees, and mission artifacts for a project.
+
+    Useful for "test, fail, retry from clean state" loops. Keeps the project
+    registration, the global roster, and (by default) per-specialist project
+    memory. Pass --also-memory to wipe memory too.
+    """
+    pstore = _project_store()
+    try:
+        proj = pstore.resolve(project_ref)
+    except project.ProjectError as e:
+        output.die(str(e))
+
+    repo = Path(proj.repo_path)
+    if not repo.is_dir():
+        output.die(f"project {proj.name!r} repo path missing: {repo}")
+
+    # What we'd delete
+    worktrees_dir = WorktreeManager().project_worktrees_dir(proj.id)
+    missions_dir = pstore.missions_dir(proj.id)
+    memory_dir = pstore.memory_dir(proj.id)
+
+    branches: list[str] = []
+    try:
+        branches = find_workforce_branches(repo)
+    except subprocess.CalledProcessError as e:
+        output.warn(f"could not list branches: {e}")
+
+    worktrees = (
+        sorted(p.name for p in worktrees_dir.iterdir() if p.is_dir())
+        if worktrees_dir.is_dir() else []
+    )
+    missions = (
+        sorted(p.name for p in missions_dir.iterdir() if p.is_dir())
+        if missions_dir.is_dir() else []
+    )
+    memory_files = (
+        sorted(p.name for p in memory_dir.iterdir() if p.is_file())
+        if memory_dir.is_dir() else []
+    )
+
+    output.info(f"[bold]project nuke[/bold]: {proj.name} (id {proj.id})")
+    output.info(f"  repo:      {repo}")
+    output.info(f"  branches:  {len(branches)} workforce/*")
+    output.info(f"  worktrees: {len(worktrees)}")
+    output.info(f"  missions:  {len(missions)}")
+    if also_memory:
+        output.info(f"  memory:    {len(memory_files)} file(s) [bold red](will be wiped)[/bold red]")
+    else:
+        output.info(f"  memory:    {len(memory_files)} file(s) [dim](kept)[/dim]")
+
+    if not (branches or worktrees or missions or (also_memory and memory_files)):
+        output.info("nothing to nuke")
+        return
+
+    if dry_run:
+        output.info("[dim](dry-run — nothing changed)[/dim]")
+        return
+
+    if not yes:
+        confirm = typer.confirm(
+            "Wipe these and start fresh? (project registration + roster are kept)",
+            default=False,
+        )
+        if not confirm:
+            output.info("aborted")
+            raise typer.Exit()
+
+    # 1. Drop worktree directories. Do this BEFORE branch deletion so git
+    #    isn't holding the branches via the worktrees.
+    if worktrees_dir.is_dir():
+        shutil.rmtree(worktrees_dir, ignore_errors=True)
+        output.success(f"removed {len(worktrees)} worktree dir(s)")
+
+    # 2. Tell git to forget the worktree registrations.
+    try:
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=repo, capture_output=True, text=True, check=False,
+        )
+    except OSError as e:
+        output.warn(f"git worktree prune failed: {e}")
+
+    # 3. Force-delete the branches.
+    deleted = 0
+    for branch in branches:
+        r = subprocess.run(
+            ["git", "branch", "-D", branch],
+            cwd=repo, capture_output=True, text=True, check=False,
+        )
+        if r.returncode == 0:
+            deleted += 1
+        else:
+            err = (r.stderr.strip() or r.stdout.strip())[:200]
+            output.warn(f"could not delete {branch}: {err}")
+    if deleted:
+        output.success(f"deleted {deleted} branch(es)")
+
+    # 4. Wipe missions.
+    if missions_dir.is_dir():
+        shutil.rmtree(missions_dir)
+        missions_dir.mkdir(parents=True, exist_ok=True)
+        output.success(f"wiped {len(missions)} mission artifact dir(s)")
+
+    # 5. Wipe memory if asked.
+    if also_memory and memory_dir.is_dir():
+        shutil.rmtree(memory_dir)
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        output.success(f"wiped {len(memory_files)} project-memory file(s)")
+
+    output.success(f"project {proj.name!r} reset to a clean slate")
 
 
 @sub.command("forget")
