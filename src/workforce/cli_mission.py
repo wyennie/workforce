@@ -761,39 +761,54 @@ def _print_summary(meta: mission.MissionMeta) -> None:
 # ----- mission lookup -------------------------------------------------------
 
 
-def _load_meta(project_id: str, mission_id: str) -> MissionMeta | None:
+def _load_any_meta(
+    project_id: str, mission_id: str
+) -> MissionMeta | ParallelMissionMeta | None:
+    """Load either a single-mission meta or a parent (parallel) meta."""
     mp = mission.mission_paths(project_id, mission_id)
     if not mp.meta.is_file():
         return None
-    return MissionMeta.model_validate_json(mp.meta.read_text())
+    text = mp.meta.read_text()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if "parent_mission_id" in data:
+        try:
+            return ParallelMissionMeta.model_validate(data)
+        except ValueError:
+            return None
+    try:
+        return MissionMeta.model_validate(data)
+    except ValueError:
+        return None
 
 
-def _find_mission(mission_id: str) -> tuple[project_mod.Project, MissionMeta]:
-    """Locate a mission across all registered projects."""
+def _find_mission(mission_id: str) -> tuple[project_mod.Project, MissionMeta | ParallelMissionMeta]:
+    """Locate a mission (single, parent, or sub) across all registered projects."""
     pstore = project_mod.ProjectStore()
     for proj in pstore.list():
-        meta = _load_meta(proj.id, mission_id)
+        meta = _load_any_meta(proj.id, mission_id)
         if meta is not None:
             return proj, meta
     output.die(f"no mission with id {mission_id!r} found in any project")
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def _list_project_missions(project_id: str) -> list[MissionMeta]:
+def _list_project_missions(
+    project_id: str,
+) -> list[MissionMeta | ParallelMissionMeta]:
+    """Return all mission metas (singles, parents, subs) for a project."""
     missions_dir = paths.project_dir(project_id) / "missions"
     if not missions_dir.is_dir():
         return []
-    out: list[MissionMeta] = []
+    out: list[MissionMeta | ParallelMissionMeta] = []
     for d in sorted(missions_dir.iterdir()):
         if not d.is_dir():
             continue
-        meta_path = d / "meta.json"
-        if meta_path.is_file():
-            try:
-                out.append(MissionMeta.model_validate_json(meta_path.read_text()))
-            except ValueError:
-                # Tolerate corrupt or in-progress meta files; skip silently.
-                continue
+        meta = _load_any_meta(project_id, d.name)
+        if meta is not None:
+            out.append(meta)
     return out
 
 
@@ -827,21 +842,39 @@ def missions_command(
 
     table = Table(show_header=True, header_style="bold")
     table.add_column("mission id")
+    table.add_column("kind")
     table.add_column("when")
-    table.add_column("specialist")
+    table.add_column("specialist / tasks", overflow="fold")
     table.add_column("status")
     table.add_column("cost", justify="right")
     table.add_column("ticket", overflow="fold")
 
     for m in reversed(missions):  # newest first
-        table.add_row(
-            m.mission_id,
-            m.started_at,
-            m.specialist,
-            _STATUS_STYLES[m.status],
-            f"${m.cost_usd:.4f}",
-            _truncate(m.ticket, 60),
-        )
+        if isinstance(m, ParallelMissionMeta):
+            tasks = ", ".join(s.task_id for s in m.sub_missions) or "(none)"
+            table.add_row(
+                m.parent_mission_id,
+                f"[bold]{m.decomposition_kind.value}[/bold]",
+                m.started_at,
+                f"[dim]{tasks}[/dim]",
+                _PARALLEL_STATUS_STYLES[m.status],
+                f"${m.manager_cost_usd:.4f}",
+                _truncate(m.ticket, 60),
+            )
+        else:
+            kind = "sub" if "__" in m.mission_id else "single"
+            # Indent sub-mission ids visually so their relationship to the
+            # parent (one row above, usually) is obvious.
+            label = f"  ↳ {m.mission_id}" if kind == "sub" else m.mission_id
+            table.add_row(
+                label,
+                f"[dim]{kind}[/dim]",
+                m.started_at,
+                m.specialist,
+                _STATUS_STYLES[m.status],
+                f"${m.cost_usd:.4f}",
+                _truncate(m.ticket, 60),
+            )
     output.print_table(table)
 
 
@@ -859,11 +892,25 @@ def replay_command(
     proj, meta = _find_mission(mission_id)
     mp = mission.mission_paths(proj.id, mission_id)
     if not mp.events.is_file():
+        if isinstance(meta, ParallelMissionMeta):
+            output.die(
+                f"{mission_id} is a parent mission — replay each sub-mission "
+                "individually:\n  "
+                + "\n  ".join(f"workforce replay {s.mission_id}" for s in meta.sub_missions)
+            )
         output.die(f"no events log at {mp.events}")
 
+    label = (
+        meta.specialist if isinstance(meta, MissionMeta)
+        else f"({meta.decomposition_kind.value} parent)"
+    )
+    status_style = (
+        _STATUS_STYLES[meta.status] if isinstance(meta, MissionMeta)
+        else _PARALLEL_STATUS_STYLES[meta.status]
+    )
     output.info(
-        f"[bold]replay {mission_id}[/bold] — {proj.name} / {meta.specialist} "
-        f"({meta.started_at}) — status: {_STATUS_STYLES[meta.status]}"
+        f"[bold]replay {mission_id}[/bold] — {proj.name} / {label} "
+        f"({meta.started_at}) — status: {status_style}"
     )
     output.rule()
 
@@ -926,11 +973,17 @@ mission_sub = typer.Typer(
 
 @mission_sub.command("show")
 def mission_show(mission_id: str = typer.Argument(..., help="Mission id.")) -> None:
-    """Show one mission's metadata, ticket, result, and commit list."""
+    """Show one mission's details. Works for single, parent (parallel), or sub missions."""
     paths.ensure_layout()
     proj, meta = _find_mission(mission_id)
-    mp = mission.mission_paths(proj.id, mission_id)
+    if isinstance(meta, ParallelMissionMeta):
+        _show_parent_meta(proj, meta)
+    else:
+        _show_single_meta(proj, meta)
 
+
+def _show_single_meta(proj: project_mod.Project, meta: MissionMeta) -> None:
+    mp = mission.mission_paths(proj.id, meta.mission_id)
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold")
     grid.add_column()
@@ -966,6 +1019,68 @@ def mission_show(mission_id: str = typer.Argument(..., help="Mission id.")) -> N
         output.print_table(ctable)
 
 
+def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) -> None:
+    """Render a parent (parallel) mission with its sub-mission roll-up."""
+    mp = mission.mission_paths(proj.id, parent.parent_mission_id)
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold")
+    grid.add_column()
+    grid.add_row("project", f"{proj.name} ({proj.id})")
+    grid.add_row("kind", parent.decomposition_kind.value)
+    grid.add_row("status", _PARALLEL_STATUS_STYLES[parent.status])
+    grid.add_row("started", parent.started_at)
+    grid.add_row("ended", parent.ended_at or "(in progress / crashed)")
+    grid.add_row("manager cost", f"${parent.manager_cost_usd:.4f}")
+    grid.add_row("sub-missions", str(len(parent.sub_missions)))
+    if parent.merge_order:
+        grid.add_row("merge order", " → ".join(parent.merge_order))
+
+    output.raw(Panel(grid, title=f"parent mission {parent.parent_mission_id}", title_align="left"))
+
+    if mp.ticket.is_file():
+        output.raw(Panel(mp.ticket.read_text().rstrip(), title="ticket", title_align="left"))
+
+    decomp_path = mp.root / "decomposition.json"
+    contract_path = mp.root / "contract" / "contract.md"
+    if contract_path.is_file():
+        output.raw(Panel(
+            contract_path.read_text().rstrip(),
+            title="contract", title_align="left",
+        ))
+    if decomp_path.is_file():
+        output.info(f"[dim]decomposition.json: {decomp_path}[/dim]")
+
+    # Roll up sub-missions
+    if parent.sub_missions:
+        stable = Table(show_header=True, header_style="bold")
+        stable.add_column("task")
+        stable.add_column("specialist")
+        stable.add_column("mission id", overflow="fold")
+        stable.add_column("status")
+        stable.add_column("cost", justify="right")
+        stable.add_column("turns", justify="right")
+        stable.add_column("commits", justify="right")
+        total_cost = parent.manager_cost_usd
+        for ref in parent.sub_missions:
+            sub = _load_any_meta(proj.id, ref.mission_id)
+            if isinstance(sub, MissionMeta):
+                total_cost += sub.cost_usd
+                stable.add_row(
+                    ref.task_id, sub.specialist, ref.mission_id,
+                    _STATUS_STYLES[sub.status],
+                    f"${sub.cost_usd:.4f}",
+                    str(sub.turn_count),
+                    str(len(sub.commits)),
+                )
+            else:
+                stable.add_row(
+                    ref.task_id, ref.specialist, ref.mission_id,
+                    "[red]missing meta[/red]", "—", "—", "—",
+                )
+        output.print_table(stable)
+        output.info(f"  total cost (manager + subs): ${total_cost:.4f}")
+
+
 @mission_sub.command("clean")
 def mission_clean(
     mission_id: str = typer.Argument(..., help="Mission id."),
@@ -981,6 +1096,11 @@ def mission_clean(
     """
     paths.ensure_layout()
     proj, meta = _find_mission(mission_id)
+    if isinstance(meta, ParallelMissionMeta):
+        output.die(
+            f"{mission_id} is a parent mission; clean each sub-mission instead:\n  "
+            + "\n  ".join(f"workforce mission clean {s.mission_id}" for s in meta.sub_missions)
+        )
     wt_path = Path(meta.worktree_path)
 
     if not wt_path.exists():
@@ -1171,6 +1291,9 @@ def mission_prune(
     candidates: list[tuple[project_mod.Project, MissionMeta]] = []
     for proj in pstore.list():
         for meta in _list_project_missions(proj.id):
+            # Parent metas have no worktree of their own; their subs do.
+            if not isinstance(meta, MissionMeta):
+                continue
             try:
                 started = _parse_iso_z(meta.started_at)
             except ValueError:

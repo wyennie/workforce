@@ -7,7 +7,7 @@ output (or capture for tests) without touching call sites.
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import Any, NoReturn
 
 from rich.console import Console
 from rich.table import Table
@@ -45,6 +45,6 @@ def raw(obj: Any) -> None:
     _stdout.print(obj)
 
 
-def die(message: str, code: int = 1) -> None:
+def die(message: str, code: int = 1) -> NoReturn:
     fail(message)
     sys.exit(code)
