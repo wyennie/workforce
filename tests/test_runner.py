@@ -225,6 +225,64 @@ def test_is_error_result_propagates(tmp_path: Path) -> None:
     assert "bang" in result.error_detail
 
 
+def test_sdk_exception_becomes_error_result(tmp_path: Path) -> None:
+    """If the SDK raises mid-stream, runner returns an ERROR — doesn't crash."""
+
+    def fake_query(*, prompt: str, options: Any, **_: Any) -> AsyncIterator[Any]:
+        async def gen() -> AsyncIterator[Any]:
+            # Yield one message, then explode (mimics SDK subprocess failure).
+            yield SystemMessage(subtype="init", data={})
+            raise Exception("Command failed with exit code 1")
+
+        return gen()
+
+    with patch.object(runner, "query", fake_query):
+        result = asyncio.run(
+            run_specialist(
+                spec=make_spec(),
+                system_prompt="s",
+                user_prompt="u",
+                cwd=tmp_path,
+            )
+        )
+    assert result.status is RunStatus.ERROR
+    assert result.error_detail is not None
+    assert "sdk error" in result.error_detail
+    assert "exit code 1" in result.error_detail
+
+
+def test_sdk_exception_writes_stderr_log(tmp_path: Path) -> None:
+    """Stderr capture file is created next to events.jsonl."""
+    log = tmp_path / "events.jsonl"
+
+    def fake_query(*, prompt: str, options: Any, **_: Any) -> AsyncIterator[Any]:
+        # Simulate the SDK invoking the stderr callback before failing.
+        if options.stderr is not None:
+            options.stderr("real diagnostic from claude CLI")
+
+        async def gen() -> AsyncIterator[Any]:
+            raise Exception("boom")
+            yield  # unreachable, satisfies type
+
+        return gen()
+
+    with patch.object(runner, "query", fake_query):
+        result = asyncio.run(
+            run_specialist(
+                spec=make_spec(),
+                system_prompt="s",
+                user_prompt="u",
+                cwd=tmp_path,
+                events_log=log,
+            )
+        )
+    assert result.status is RunStatus.ERROR
+    stderr_path = log.with_name("stderr.log")
+    assert stderr_path.is_file()
+    assert "real diagnostic" in stderr_path.read_text()
+    assert "stderr.log" in (result.error_detail or "")
+
+
 def test_wall_timeout(tmp_path: Path) -> None:
     """A slow stream should be cut off when max_wall_seconds elapses."""
     msgs = [_assistant("a"), _result()]

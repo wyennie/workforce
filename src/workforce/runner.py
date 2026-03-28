@@ -99,6 +99,18 @@ async def run_specialist(
     state: _RunState = _RunState()
     log_fh = events_log.open("w") if events_log else None
 
+    # Capture the underlying claude CLI's stderr alongside the event log so
+    # we have real diagnostics when the SDK reports a generic failure.
+    stderr_path = events_log.with_name("stderr.log") if events_log else None
+    stderr_fh = stderr_path.open("w") if stderr_path else None
+
+    def _stderr(line: str) -> None:
+        if stderr_fh is not None:
+            stderr_fh.write(line + "\n")
+            stderr_fh.flush()
+
+    options.stderr = _stderr if stderr_fh is not None else None
+
     async def consume() -> None:
         async for msg in query(prompt=user_prompt, options=options):
             if log_fh is not None:
@@ -121,9 +133,24 @@ async def run_specialist(
             )
         except asyncio.CancelledError:
             return _make_result(state, started, RunStatus.INTERRUPTED, "cancelled")
+        except Exception as e:
+            # SDK or underlying `claude` CLI failure. Don't propagate — that
+            # would kill sibling sub-missions in a parallel dispatch. Mark
+            # this run as errored; the orchestrator decides what to do.
+            stderr_hint = (
+                f" (see {stderr_path} for details)" if stderr_path else ""
+            )
+            return _make_result(
+                state,
+                started,
+                RunStatus.ERROR,
+                f"sdk error: {type(e).__name__}: {str(e)[:300]}{stderr_hint}",
+            )
     finally:
         if log_fh is not None:
             log_fh.close()
+        if stderr_fh is not None:
+            stderr_fh.close()
 
     final = state.final
     if final is None:
