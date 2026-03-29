@@ -392,6 +392,8 @@ async def dispatch(
     mission_id: str | None = None,
     extra_context: str | None = None,
     manager_cost_usd: float = 0.0,
+    start_point: str | None = None,
+    additional_merges: list[str] | None = None,
 ) -> MissionMeta:
     """Run one mission end-to-end. See module docstring."""
     limits = limits or RunLimits()
@@ -399,6 +401,7 @@ async def dispatch(
     mp = mission_paths(project.id, mission_id)
     mp.root.mkdir(parents=True, exist_ok=True)
     mp.ticket.write_text(ticket.rstrip() + "\n")
+    started_iso = _now_iso()
 
     # Compose prompts.
     cross_project_memory = roster_store.load_memory(specialist.name)
@@ -411,12 +414,58 @@ async def dispatch(
     )
     user_prompt = compose_user_prompt(ticket, extra_context=extra_context)
 
-    # Create worktree.
+    # Create worktree, optionally forking from another task's branch.
     repo_path = Path(project.repo_path)
-    wt = worktree_manager.create(repo_path, project.id, mission_id)
+    wt = worktree_manager.create(
+        repo_path, project.id, mission_id, start_point=start_point
+    )
+
+    # Merge any additional dependency branches into the worktree before the
+    # specialist starts (sequential multi-dep case). On conflict, abort and
+    # bail this mission with a clear status.
+    if additional_merges:
+        for merge_branch in additional_merges:
+            r = subprocess.run(
+                ["git", "merge", "--no-ff", merge_branch],
+                cwd=wt.worktree_path, capture_output=True, text=True, check=False,
+            )
+            if r.returncode != 0:
+                subprocess.run(
+                    ["git", "merge", "--abort"],
+                    cwd=wt.worktree_path, capture_output=True, text=True, check=False,
+                )
+                err = (r.stderr.strip() or r.stdout.strip())[:200]
+                ended_iso = _now_iso()
+                meta = MissionMeta(
+                    mission_id=mission_id,
+                    project_id=project.id,
+                    project_name=project.name,
+                    specialist=specialist.name,
+                    model=specialist.model,
+                    ticket=ticket,
+                    branch=wt.branch,
+                    worktree_path=str(wt.worktree_path),
+                    base_sha=wt.base_sha,
+                    started_at=started_iso,
+                    ended_at=ended_iso,
+                    duration_seconds=0.0,
+                    status=MissionStatus.ERROR,
+                    error_detail=(
+                        f"could not merge dep branch {merge_branch!r} into worktree "
+                        f"before starting: {err}"
+                    ),
+                    cost_usd=manager_cost_usd,
+                    manager_cost_usd=manager_cost_usd,
+                    turn_count=0,
+                )
+                mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
+                # Update specialist stats (failure)
+                stats = roster_store.load_stats(specialist.name)
+                stats.missions_failed += 1
+                roster_store.save_stats(specialist.name, stats)
+                return meta
 
     # Run the mission, collecting messages for transcript.
-    started_iso = _now_iso()
     collected: list[Any] = []
 
     def collect(msg: Any) -> None:

@@ -140,8 +140,16 @@ class WorktreeManager:
         repo_path: Path,
         project_id: str,
         mission_id: str,
+        *,
+        start_point: str | None = None,
     ) -> WorktreeRef:
-        """Create a fresh worktree on a new `workforce/<mission-id>` branch."""
+        """Create a fresh worktree on a new `workforce/<mission-id>` branch.
+
+        With `start_point=None` (default), the new branch forks from the source
+        repo's current HEAD. With a ref name (a branch, sha, or tag), it forks
+        from there instead — used for sequential execution where later tasks
+        fork from earlier tasks' branch tips.
+        """
         if not MISSION_ID_PATTERN.match(mission_id):
             raise WorktreeError(
                 f"invalid mission id {mission_id!r}: must start with alphanumeric "
@@ -177,8 +185,17 @@ class WorktreeManager:
             )
 
         wt_path.parent.mkdir(parents=True, exist_ok=True)
-        base_sha = self._git(repo_path, ["rev-parse", "HEAD"], capture=True).strip()
-        self._git(repo_path, ["worktree", "add", "-b", branch, str(wt_path)])
+        if start_point is not None:
+            base_ref = start_point
+        else:
+            base_ref = "HEAD"
+        base_sha = self._git(repo_path, ["rev-parse", base_ref], capture=True).strip()
+        # `git worktree add -b NEW PATH START_POINT` forks NEW from START_POINT.
+        # Without the start_point argument it forks from current HEAD.
+        args = ["worktree", "add", "-b", branch, str(wt_path)]
+        if start_point is not None:
+            args.append(start_point)
+        self._git(repo_path, args)
         return WorktreeRef(
             repo_path=repo_path,
             worktree_path=wt_path,

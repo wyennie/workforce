@@ -507,6 +507,64 @@ async def dispatch_parallel(
     )
 
 
+def _topological_waves(tasks: list[Task]) -> list[list[Task]]:
+    """Group tasks into waves that can run in parallel respecting depends_on.
+
+    Wave 0 = tasks with no real dependencies (the synthetic 'contract' is
+    always satisfied).
+    Wave N+1 = tasks whose deps are all in waves 0..N.
+
+    Used for sequential execution: each wave runs in parallel via
+    asyncio.gather, but later waves wait for earlier ones to complete so
+    they can fork from the right branch tips.
+    """
+    waves: list[list[Task]] = []
+    remaining = {t.id: t for t in tasks}
+    completed: set[str] = set()
+    while remaining:
+        ready = [
+            t for t in remaining.values()
+            if all(d == CONTRACT_TASK_ID or d in completed for d in t.depends_on)
+        ]
+        if not ready:
+            raise ValueError(
+                "dependency cycle in remaining tasks: " + ", ".join(remaining)
+            )
+        waves.append(ready)
+        for t in ready:
+            del remaining[t.id]
+            completed.add(t.id)
+    return waves
+
+
+def _skipped_meta(
+    *,
+    project: Project,
+    specialist_name: str,
+    sub_mission_id: str,
+    ticket: str,
+    failed_deps: list[str],
+) -> MissionMeta:
+    """Synthetic MissionMeta for a sub-mission whose deps failed."""
+    now = _now_iso()
+    return MissionMeta(
+        mission_id=sub_mission_id,
+        project_id=project.id,
+        project_name=project.name,
+        specialist=specialist_name,
+        model="(skipped)",
+        ticket=ticket,
+        branch="(none)",
+        worktree_path="(none)",
+        base_sha="(none)",
+        started_at=now,
+        ended_at=now,
+        duration_seconds=0.0,
+        status=MissionStatus.ERROR,
+        error_detail=f"skipped — dependency task(s) failed: {', '.join(failed_deps)}",
+    )
+
+
 async def _run_sub_missions(
     *,
     resolved: list[_ResolvedTask],
@@ -518,15 +576,23 @@ async def _run_sub_missions(
     limits: RunLimits | None,
     make_sub_callback: "SubCallbackFactory | None",
 ) -> list[MissionMeta]:
-    """Run all sub-missions concurrently and gather results."""
+    """Run sub-missions wave-by-wave, honoring depends_on for sequential cases."""
+    extra_context = (
+        f"## Contract\n\n{contract_text.strip()}" if contract_text else None
+    )
 
-    async def one(r: _ResolvedTask) -> MissionMeta:
-        # Each sub-mission gets the contract injected as extra_context.
-        extra = (
-            f"## Contract\n\n{contract_text.strip()}"
-            if contract_text
-            else None
-        )
+    by_task_id = {r.task.id: r for r in resolved}
+    waves = _topological_waves([r.task for r in resolved])
+
+    # Track which tasks completed cleanly and what branch they're on.
+    completed_branches: dict[str, str] = {}
+    all_metas: list[MissionMeta] = []
+
+    async def run_one(
+        r: _ResolvedTask,
+        start_point: str | None,
+        additional_merges: list[str],
+    ) -> MissionMeta:
         cb = make_sub_callback(r.task.id) if make_sub_callback is not None else None
         return await mission.dispatch(
             project=project,
@@ -538,10 +604,58 @@ async def _run_sub_missions(
             limits=limits,
             on_message=cb,
             mission_id=r.sub_mission_id,
-            extra_context=extra,
+            extra_context=extra_context,
+            start_point=start_point,
+            additional_merges=additional_merges or None,
         )
 
-    return await asyncio.gather(*(one(r) for r in resolved))
+    for wave in waves:
+        wave_resolved = [by_task_id[t.id] for t in wave]
+        coros = []
+        skips: list[MissionMeta] = []
+
+        for r in wave_resolved:
+            real_deps = [d for d in r.task.depends_on if d != CONTRACT_TASK_ID]
+            failed_deps = [d for d in real_deps if d not in completed_branches]
+            if failed_deps:
+                skips.append(_skipped_meta(
+                    project=project,
+                    specialist_name=r.specialist.name,
+                    sub_mission_id=r.sub_mission_id,
+                    ticket=r.task.description,
+                    failed_deps=failed_deps,
+                ))
+                continue
+
+            if not real_deps:
+                start_point = None  # use source's HEAD
+                additional_merges: list[str] = []
+            else:
+                # Fork from first dep's branch tip; merge any others in.
+                primary = real_deps[0]
+                start_point = completed_branches[primary]
+                additional_merges = [completed_branches[d] for d in real_deps[1:]]
+
+            coros.append(run_one(r, start_point, additional_merges))
+
+        # Save synthetic skip metas now so they show up in mission show.
+        for meta in skips:
+            mp = mission.mission_paths(project.id, meta.mission_id)
+            mp.root.mkdir(parents=True, exist_ok=True)
+            mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
+            all_metas.append(meta)
+
+        # Run runnable tasks in this wave concurrently.
+        if coros:
+            wave_metas = await asyncio.gather(*coros)
+            for meta in wave_metas:
+                all_metas.append(meta)
+                if meta.status is MissionStatus.COMPLETED:
+                    # Find the task id for this meta to record its branch.
+                    task_id = meta.mission_id.rsplit("__", 1)[-1]
+                    completed_branches[task_id] = meta.branch
+
+    return all_metas
 
 
 def _save_parent_meta(path: Path, meta: ParallelMissionMeta) -> None:

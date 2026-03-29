@@ -25,6 +25,7 @@ from workforce.parallel import (
     MergeStep,
     ParallelStatus,
     ResolutionError,
+    _topological_waves,
     auto_merge,
     auto_merge_into,
     dispatch_parallel,
@@ -652,3 +653,222 @@ def test_auto_merge_into_already_on_target(repo: Path) -> None:
     plan = [_step("a", "wf/a")]
     results = auto_merge_into(repo, plan, target_branch="main")
     assert all(r.success for r in results)
+
+
+# ----- topological waves ----------------------------------------------------
+
+
+def test_waves_independent_tasks_one_wave() -> None:
+    tasks = [Task(id="a", description="x"), Task(id="b", description="y")]
+    waves = _topological_waves(tasks)
+    assert len(waves) == 1
+    assert {t.id for t in waves[0]} == {"a", "b"}
+
+
+def test_waves_linear_chain() -> None:
+    tasks = [
+        Task(id="a", description="x"),
+        Task(id="b", description="y", depends_on=["a"]),
+        Task(id="c", description="z", depends_on=["b"]),
+    ]
+    waves = _topological_waves(tasks)
+    assert [[t.id for t in w] for w in waves] == [["a"], ["b"], ["c"]]
+
+
+def test_waves_diamond() -> None:
+    """A → {B, C} → D — three waves, B+C parallel, D depends on both."""
+    tasks = [
+        Task(id="a", description="x"),
+        Task(id="b", description="y", depends_on=["a"]),
+        Task(id="c", description="z", depends_on=["a"]),
+        Task(id="d", description="w", depends_on=["b", "c"]),
+    ]
+    waves = _topological_waves(tasks)
+    assert [t.id for t in waves[0]] == ["a"]
+    assert {t.id for t in waves[1]} == {"b", "c"}
+    assert [t.id for t in waves[2]] == ["d"]
+
+
+def test_waves_contract_pseudo_dep_is_satisfied() -> None:
+    """Tasks with depends_on=['contract'] start in wave 0 (contract is implicit)."""
+    tasks = [
+        Task(id="a", description="x", depends_on=["contract"]),
+        Task(id="b", description="y", depends_on=["contract"]),
+    ]
+    waves = _topological_waves(tasks)
+    assert len(waves) == 1
+    assert {t.id for t in waves[0]} == {"a", "b"}
+
+
+def test_waves_cycle_raises() -> None:
+    tasks = [
+        Task(id="a", description="x", depends_on=["b"]),
+        Task(id="b", description="y", depends_on=["a"]),
+    ]
+    with pytest.raises(ValueError, match="cycle"):
+        _topological_waves(tasks)
+
+
+# ----- sequential dispatch end-to-end (mocked runner, real git) -------------
+
+
+def _seq_decomp() -> Decomposition:
+    """A → B → C linear chain."""
+    return Decomposition(
+        ticket="t",
+        kind=DecompositionKind.SEQUENTIAL,
+        rationale="r",
+        contract=Contract(needed=False, path="", body=""),
+        tasks=[
+            Task(id="a", description="task a", suggested_specialist="aria"),
+            Task(id="b", description="task b", depends_on=["a"], suggested_specialist="aria"),
+            Task(id="c", description="task c", depends_on=["b"], suggested_specialist="aria"),
+        ],
+        merge_order=["a", "b", "c"],
+    )
+
+
+def _runner_makes_a_commit(file_per_task: dict[str, str]) -> Any:
+    """Replacement for runner.run_specialist that commits one file per task.
+
+    The file is keyed by task id (extracted from the worktree path's last
+    segment after '__'). After each task completes, its branch holds the
+    commit. Used to verify sequential forks see prior commits.
+    """
+    async def fake(**kwargs: Any) -> RunResult:
+        cwd = Path(kwargs["cwd"])
+        # Mission id == final dir name; task id == suffix after __
+        task_id = cwd.name.rsplit("__", 1)[-1]
+        filename = file_per_task.get(task_id, f"{task_id}.txt")
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=cwd, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=cwd, check=True)
+        (cwd / filename).write_text(f"from {task_id}\n")
+        subprocess.run(["git", "add", filename], cwd=cwd, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"feat({task_id})"], cwd=cwd, check=True)
+
+        result = ResultMessage(
+            subtype="success", duration_ms=1000, duration_api_ms=900,
+            is_error=False, num_turns=2, session_id="s", stop_reason=None,
+            total_cost_usd=0.05, usage=None, result=None,
+            structured_output=None, model_usage=None, permission_denials=None,
+            errors=None, uuid=None,
+        )
+        cb = kwargs.get("on_message")
+        if cb:
+            cb(result)
+        return RunResult(
+            status=RunStatus.COMPLETED, final=result, cost_usd=0.05,
+            duration_seconds=1.0, turn_count=2,
+        )
+    return fake
+
+
+def test_sequential_chain_each_task_sees_prior(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """Linear A→B→C: B's worktree contains a.txt, C's contains a.txt and b.txt."""
+    rs, ps, wm, proj = stores_and_project
+    decomp = _seq_decomp()
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        with patch.object(runner_mod, "run_specialist", _runner_makes_a_commit({})):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                result = asyncio.run(
+                    dispatch_parallel(
+                        project=proj, ticket="t",
+                        roster_store=rs, project_store=ps, worktree_manager=wm,
+                        confirm=None,
+                        parent_mission_id="m-seq",
+                    )
+                )
+
+    assert result.parent_meta.status is ParallelStatus.COMPLETED
+    by_id = {m.mission_id: m for m in result.sub_metas}
+
+    # B's worktree should contain a.txt (committed by A on a's branch).
+    b_wt = Path(by_id["m-seq__b"].worktree_path)
+    assert (b_wt / "a.txt").is_file()
+
+    # C's worktree should contain BOTH a.txt and b.txt.
+    c_wt = Path(by_id["m-seq__c"].worktree_path)
+    assert (c_wt / "a.txt").is_file()
+    assert (c_wt / "b.txt").is_file()
+
+
+def test_sequential_diamond_multi_dep_merges(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """A → {B, C} → D. D should have a, b, AND c (multi-dep merges)."""
+    rs, ps, wm, proj = stores_and_project
+    decomp = Decomposition(
+        ticket="t", kind=DecompositionKind.SEQUENTIAL, rationale="r",
+        contract=Contract(needed=False, path="", body=""),
+        tasks=[
+            Task(id="a", description="ta", suggested_specialist="aria"),
+            Task(id="b", description="tb", depends_on=["a"], suggested_specialist="aria"),
+            Task(id="c", description="tc", depends_on=["a"], suggested_specialist="aria"),
+            Task(id="d", description="td", depends_on=["b", "c"], suggested_specialist="aria"),
+        ],
+        merge_order=["a", "b", "c", "d"],
+    )
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        with patch.object(runner_mod, "run_specialist", _runner_makes_a_commit({})):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                result = asyncio.run(
+                    dispatch_parallel(
+                        project=proj, ticket="t",
+                        roster_store=rs, project_store=ps, worktree_manager=wm,
+                        confirm=None,
+                        parent_mission_id="m-diamond",
+                    )
+                )
+
+    assert result.parent_meta.status is ParallelStatus.COMPLETED
+    by_id = {m.mission_id: m for m in result.sub_metas}
+    d_wt = Path(by_id["m-diamond__d"].worktree_path)
+    assert (d_wt / "a.txt").is_file()
+    assert (d_wt / "b.txt").is_file()
+    assert (d_wt / "c.txt").is_file()
+
+
+def test_sequential_failure_skips_dependents(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """If A fails, B (dep on A) is skipped with a clear status."""
+    rs, ps, wm, proj = stores_and_project
+    decomp = _seq_decomp()  # a → b → c
+
+    async def fake(**kwargs: Any) -> RunResult:
+        cwd = Path(kwargs["cwd"])
+        task_id = cwd.name.rsplit("__", 1)[-1]
+        if task_id == "a":
+            # A fails
+            return RunResult(
+                status=RunStatus.ERROR, final=None,
+                cost_usd=0.05, duration_seconds=1.0, turn_count=1,
+                error_detail="boom",
+            )
+        # Should never be called for b/c
+        raise AssertionError(f"task {task_id} should have been skipped")
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        with patch.object(runner_mod, "run_specialist", fake):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                result = asyncio.run(
+                    dispatch_parallel(
+                        project=proj, ticket="t",
+                        roster_store=rs, project_store=ps, worktree_manager=wm,
+                        confirm=None,
+                        parent_mission_id="m-failchain",
+                    )
+                )
+
+    assert result.parent_meta.status is ParallelStatus.FAILED
+    by_id = {m.mission_id: m for m in result.sub_metas}
+    assert by_id["m-failchain__a"].status is MissionStatus.ERROR
+    # b and c skipped
+    assert by_id["m-failchain__b"].status is MissionStatus.ERROR
+    assert "skipped" in (by_id["m-failchain__b"].error_detail or "")
+    assert by_id["m-failchain__c"].status is MissionStatus.ERROR
+    assert "skipped" in (by_id["m-failchain__c"].error_detail or "")
