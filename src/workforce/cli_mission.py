@@ -25,6 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from workforce import (
+    cli_panels,
     manager,
     mission,
     output,
@@ -185,6 +186,10 @@ def dispatch_command(
         False, "--yes", "-y",
         help="Skip the decomposition confirmation prompt.",
     ),
+    plain: bool = typer.Option(
+        False, "--plain",
+        help="Use plain interleaved output instead of per-worker live panels (parallel mode only).",
+    ),
 ) -> None:
     """Dispatch a mission. The Manager plans it, then it runs.
 
@@ -249,6 +254,7 @@ def dispatch_command(
         limits=limits, skip_confirm=yes, auto_staff=auto_staff,
         auto_merge=auto_merge or merge_into is not None,
         merge_into=merge_into,
+        plain=plain,
     )
 
 
@@ -307,6 +313,7 @@ def _dispatch_with_manager(
     auto_staff: bool,
     auto_merge: bool = False,
     merge_into: str | None = None,
+    plain: bool = False,
 ) -> None:
     """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
@@ -357,6 +364,7 @@ def _dispatch_with_manager(
             roster_store, project_store, worktree_manager,
             limits=limits, skip_confirm=skip_confirm, auto_staff=auto_staff,
             auto_merge=auto_merge, merge_into=merge_into,
+            plain=plain,
         )
 
 
@@ -450,6 +458,7 @@ def _dispatch_after_manager_parallel(
     auto_staff: bool,
     auto_merge: bool = False,
     merge_into: str | None = None,
+    plain: bool = False,
 ) -> None:
     """Manager said parallel/sequential. Hand off to the parallel orchestrator."""
     confirm_cb: parallel.ConfirmCallback | None
@@ -458,21 +467,41 @@ def _dispatch_after_manager_parallel(
     else:
         confirm_cb = _confirm_decomposition
 
+    task_ids = [t.id for t in decomp.tasks]
+    use_panels = not plain and cli_panels.stdout_is_tty()
+
     try:
-        result = asyncio.run(
-            parallel.dispatch_parallel(
-                project=proj,
-                ticket=ticket,
-                roster_store=roster_store,
-                project_store=project_store,
-                worktree_manager=worktree_manager,
-                sub_mission_limits=limits,
-                make_sub_callback=_make_sub_renderer,
-                confirm=confirm_cb,
-                auto_staff=auto_staff,
-                decomposition_override=decomp,
+        if use_panels:
+            with cli_panels.PanelDisplay(task_ids) as panels:
+                result = asyncio.run(
+                    parallel.dispatch_parallel(
+                        project=proj,
+                        ticket=ticket,
+                        roster_store=roster_store,
+                        project_store=project_store,
+                        worktree_manager=worktree_manager,
+                        sub_mission_limits=limits,
+                        make_sub_callback=panels.make_callback,
+                        confirm=confirm_cb,
+                        auto_staff=auto_staff,
+                        decomposition_override=decomp,
+                    )
+                )
+        else:
+            result = asyncio.run(
+                parallel.dispatch_parallel(
+                    project=proj,
+                    ticket=ticket,
+                    roster_store=roster_store,
+                    project_store=project_store,
+                    worktree_manager=worktree_manager,
+                    sub_mission_limits=limits,
+                    make_sub_callback=_make_sub_renderer,
+                    confirm=confirm_cb,
+                    auto_staff=auto_staff,
+                    decomposition_override=decomp,
+                )
             )
-        )
     except KeyboardInterrupt:
         output.warn("interrupted")
         raise typer.Exit(code=130)
