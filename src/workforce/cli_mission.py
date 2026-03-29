@@ -186,9 +186,9 @@ def dispatch_command(
         False, "--yes", "-y",
         help="Skip the decomposition confirmation prompt.",
     ),
-    plain: bool = typer.Option(
-        False, "--plain",
-        help="Use plain interleaved output instead of per-worker live panels (parallel mode only).",
+    panels: bool = typer.Option(
+        False, "--panels",
+        help="Show per-worker live panels instead of the default interleaved output (parallel mode only).",
     ),
 ) -> None:
     """Dispatch a mission. The Manager plans it, then it runs.
@@ -254,7 +254,7 @@ def dispatch_command(
         limits=limits, skip_confirm=yes, auto_staff=auto_staff,
         auto_merge=auto_merge or merge_into is not None,
         merge_into=merge_into,
-        plain=plain,
+        panels=panels,
     )
 
 
@@ -313,7 +313,7 @@ def _dispatch_with_manager(
     auto_staff: bool,
     auto_merge: bool = False,
     merge_into: str | None = None,
-    plain: bool = False,
+    panels: bool = False,
 ) -> None:
     """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
@@ -364,7 +364,7 @@ def _dispatch_with_manager(
             roster_store, project_store, worktree_manager,
             limits=limits, skip_confirm=skip_confirm, auto_staff=auto_staff,
             auto_merge=auto_merge, merge_into=merge_into,
-            plain=plain,
+            panels=panels,
         )
 
 
@@ -458,7 +458,7 @@ def _dispatch_after_manager_parallel(
     auto_staff: bool,
     auto_merge: bool = False,
     merge_into: str | None = None,
-    plain: bool = False,
+    panels: bool = False,
 ) -> None:
     """Manager said parallel/sequential. Hand off to the parallel orchestrator."""
     confirm_cb: parallel.ConfirmCallback | None
@@ -468,11 +468,11 @@ def _dispatch_after_manager_parallel(
         confirm_cb = _confirm_decomposition
 
     task_ids = [t.id for t in decomp.tasks]
-    use_panels = not plain and cli_panels.stdout_is_tty()
+    use_panels = panels and cli_panels.stdout_is_tty()
 
     try:
         if use_panels:
-            with cli_panels.PanelDisplay(task_ids) as panels:
+            with cli_panels.PanelDisplay(task_ids) as panel_display:
                 result = asyncio.run(
                     parallel.dispatch_parallel(
                         project=proj,
@@ -481,7 +481,7 @@ def _dispatch_after_manager_parallel(
                         project_store=project_store,
                         worktree_manager=worktree_manager,
                         sub_mission_limits=limits,
-                        make_sub_callback=panels.make_callback,
+                        make_sub_callback=panel_display.make_callback,
                         confirm=confirm_cb,
                         auto_staff=auto_staff,
                         decomposition_override=decomp,
