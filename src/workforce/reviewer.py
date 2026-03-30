@@ -30,7 +30,6 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-
 SCHEMA_VERSION = 1
 
 
@@ -233,7 +232,7 @@ async def run_reviewer(
 
     try:
         await asyncio.wait_for(consume(), timeout=max_wall_seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise ReviewError(
             f"reviewer exceeded wall-time limit ({max_wall_seconds:.0f}s)"
         ) from None

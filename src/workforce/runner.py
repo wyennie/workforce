@@ -12,10 +12,11 @@ import asyncio
 import dataclasses
 import json
 import time
-from dataclasses import dataclass, field
-from enum import Enum
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -34,7 +35,7 @@ class RunLimits:
     max_wall_seconds: float = 1800.0  # 30 min
 
 
-class RunStatus(str, Enum):
+class RunStatus(StrEnum):
     COMPLETED = "completed"     # ResultMessage arrived, is_error == False
     ERROR = "error"             # SDK reported an error or no ResultMessage
     WALL_TIMEOUT = "wall_timeout"
@@ -124,7 +125,7 @@ async def run_specialist(
     try:
         try:
             await asyncio.wait_for(consume(), timeout=limits.max_wall_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return _make_result(
                 state,
                 started,

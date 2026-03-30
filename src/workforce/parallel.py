@@ -12,16 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import json
 import subprocess
-from dataclasses import dataclass, field
-from enum import Enum
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from workforce import manager, mission, paths
+from workforce import manager, mission
 from workforce.manager import (
     CONTRACT_TASK_ID,
     Decomposition,
@@ -29,7 +28,6 @@ from workforce.manager import (
     ManagerError,
     SpecialistInfo,
     Task,
-    ValidationError,
 )
 from workforce.mission import (
     MissionMeta,
@@ -47,14 +45,13 @@ from workforce.specialist import (
 )
 from workforce.worktree import WorktreeManager
 
-
 SCHEMA_VERSION = 1
 
 
 # ----- Models ---------------------------------------------------------------
 
 
-class ParallelStatus(str, Enum):
+class ParallelStatus(StrEnum):
     PLANNED = "planned"            # Manager done, sub-missions not yet run
     DISPATCHED = "dispatched"      # All sub-missions started
     COMPLETED = "completed"        # All sub-missions completed cleanly
@@ -244,7 +241,7 @@ def _staff_one_task(
 
 
 def _now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _build_specialist_info(
@@ -333,9 +330,9 @@ async def dispatch_parallel(
     worktree_manager: WorktreeManager,
     sub_mission_limits: RunLimits | None = None,
     on_manager_message: EventCallback | None = None,
-    make_sub_callback: "SubCallbackFactory | None" = None,
+    make_sub_callback: SubCallbackFactory | None = None,
     fallback_specialist: str | None = None,
-    confirm: "ConfirmCallback | None" = None,
+    confirm: ConfirmCallback | None = None,
     parent_mission_id: str | None = None,
     decomposition_override: Decomposition | None = None,
     auto_staff: bool = True,
@@ -578,7 +575,7 @@ async def _run_sub_missions(
     worktree_manager: WorktreeManager,
     contract_text: str | None,
     limits: RunLimits | None,
-    make_sub_callback: "SubCallbackFactory | None",
+    make_sub_callback: SubCallbackFactory | None,
     review: bool = False,
     max_revisions: int = 3,
 ) -> list[MissionMeta]:
@@ -672,8 +669,6 @@ def _save_parent_meta(path: Path, meta: ParallelMissionMeta) -> None:
 
 
 # ----- Callback signatures (for type-only purposes) -------------------------
-
-from collections.abc import Callable
 
 # confirm receives (decomposition, [(task_id, specialist_name, staffing_action)])
 ConfirmCallback = Callable[[Decomposition, list[tuple[str, str, str]]], bool]

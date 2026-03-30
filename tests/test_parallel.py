@@ -16,11 +16,11 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
-from workforce import manager, mission, parallel, runner as runner_mod
+from workforce import manager, mission, parallel
+from workforce import runner as runner_mod
 from workforce.manager import Contract, Decomposition, DecompositionKind, Task
 from workforce.mission import MissionMeta, MissionStatus
 from workforce.parallel import (
-    AutoMergeStepResult,
     MergePreflightError,
     MergeStep,
     ParallelStatus,
@@ -36,7 +36,6 @@ from workforce.project import Project, ProjectStore
 from workforce.runner import RunResult, RunStatus
 from workforce.specialist import RosterStore, Specialist
 from workforce.worktree import WorktreeManager
-
 
 # ----- fixtures --------------------------------------------------------------
 

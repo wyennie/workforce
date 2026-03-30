@@ -20,7 +20,6 @@ from pathlib import Path
 from workforce import paths
 from workforce.project import is_git_repo
 
-
 BRANCH_PREFIX = "workforce/"
 # mission_id is used in a branch name and a directory name. Keep it strict.
 MISSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")

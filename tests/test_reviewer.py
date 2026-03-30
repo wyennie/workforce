@@ -10,13 +10,12 @@ from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import (
-    AssistantMessage,
     ResultMessage,
-    TextBlock,
 )
 
-from workforce import mission, reviewer, runner as runner_mod
-from workforce.mission import MissionMeta, MissionStatus, dispatch
+from workforce import mission, reviewer
+from workforce import runner as runner_mod
+from workforce.mission import MissionStatus, dispatch
 from workforce.project import Project, ProjectStore
 from workforce.reviewer import (
     Review,
@@ -27,7 +26,6 @@ from workforce.reviewer import (
 from workforce.runner import RunResult, RunStatus
 from workforce.specialist import RosterStore, Specialist
 from workforce.worktree import WorktreeManager
-
 
 # ----- Model ----------------------------------------------------------------
 
@@ -184,7 +182,7 @@ def _make_reviewer(verdicts: list[Review]) -> Any:
         try:
             return next(iterator), 0.02
         except StopIteration:
-            raise AssertionError("reviewer called more times than expected")
+            raise AssertionError("reviewer called more times than expected") from None
     return fake
 
 

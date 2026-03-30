@@ -18,7 +18,7 @@ import fcntl
 import json
 import re
 import shutil
-import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,12 +27,6 @@ import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from workforce import paths
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - we require 3.11+ via pyproject
-    import tomli as tomllib  # type: ignore[no-redef]
-
 
 SCHEMA_VERSION = 1
 DEFAULT_MODEL = "claude-sonnet-4-6"

@@ -33,7 +33,6 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-
 _DEFAULT_LINES_PER_PANEL = 10
 
 

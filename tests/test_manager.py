@@ -18,7 +18,6 @@ from workforce.manager import (
     validate_decomposition,
 )
 
-
 # ----- Models ----------------------------------------------------------------
 
 

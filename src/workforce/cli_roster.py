@@ -7,12 +7,14 @@ from rich.panel import Panel
 from rich.table import Table
 
 from workforce import output, paths
+from workforce.project import ProjectStore
 from workforce.specialist import (
     DEFAULT_MODEL,
     TEMPLATES,
     RosterError,
     RosterStore,
     Specialist,
+    common_preamble,
 )
 
 
@@ -121,7 +123,7 @@ def roster() -> None:
 
 
 def show(name: str = typer.Argument(..., help="Specialist name.")) -> None:
-    """Show one specialist including their memory."""
+    """Show one specialist including their memory (cross-project + per-project)."""
     store = _store()
     try:
         spec = store.load(name)
@@ -130,6 +132,15 @@ def show(name: str = typer.Argument(..., help="Specialist name.")) -> None:
 
     stats = store.load_stats(name)
     memory = store.load_memory(name).strip()
+
+    # Find which projects this specialist is assigned to + per-project memory.
+    pstore = ProjectStore()
+    project_memories: list[tuple[str, str]] = []  # (project_name, memory_text)
+    for proj in pstore.list():
+        if name in proj.assigned_specialists:
+            mem_path = pstore.memory_dir(proj.id) / f"{name}.md"
+            text = mem_path.read_text().strip() if mem_path.is_file() else ""
+            project_memories.append((proj.name, text))
 
     meta = Table.grid(padding=(0, 2))
     meta.add_column(style="bold")
@@ -141,6 +152,10 @@ def show(name: str = typer.Argument(..., help="Specialist name.")) -> None:
     meta.add_row("missions completed", str(stats.missions_completed))
     meta.add_row("missions failed", str(stats.missions_failed))
     meta.add_row("total cost (usd)", f"{stats.total_cost_usd:.4f}")
+    meta.add_row(
+        "assigned to",
+        ", ".join(p for p, _ in project_memories) if project_memories else "(none)",
+    )
     output.raw(Panel(meta, title=f"specialist: {name}", title_align="left"))
 
     output.raw(Panel(spec.base_prompt.rstrip(), title="base prompt", title_align="left"))
@@ -151,4 +166,83 @@ def show(name: str = typer.Argument(..., help="Specialist name.")) -> None:
             title="cross-project memory",
             title_align="left",
         )
+    )
+
+    for proj_name, mem_text in project_memories:
+        output.raw(Panel(
+            mem_text or "[dim](no memory yet for this project)[/dim]",
+            title=f"project memory · {proj_name}",
+            title_align="left",
+        ))
+
+
+def refresh(
+    name: str | None = typer.Argument(
+        None, help="Specialist to refresh; omit for all.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Re-apply the latest common preamble to one or all specialists.
+
+    Preserves each specialist's `## Role` section (template-specific guidance
+    or your custom edits). Only updates the preamble portion above it. Useful
+    when the common preamble evolves and you want existing specialists to
+    pick up the new rules without losing their identity.
+    """
+    store = _store()
+    names = [name] if name else store.names()
+    if not names:
+        output.info("roster is empty — nothing to refresh")
+        return
+
+    if not yes:
+        confirm = typer.confirm(
+            f"Refresh preamble for {len(names)} specialist(s): {', '.join(names)}?",
+            default=False,
+        )
+        if not confirm:
+            output.info("aborted")
+            raise typer.Exit()
+
+    refreshed = 0
+    skipped: list[tuple[str, str]] = []
+    for n in names:
+        try:
+            spec = store.load(n)
+        except RosterError as e:
+            skipped.append((n, str(e)))
+            continue
+        idx = spec.base_prompt.find("## Role")
+        if idx == -1:
+            skipped.append((n, "no '## Role' marker found in saved prompt"))
+            continue
+        role_section = spec.base_prompt[idx:]
+        new_prompt = common_preamble(spec.name) + "\n" + role_section
+        if new_prompt == spec.base_prompt:
+            continue  # already up-to-date
+        new_spec = spec.model_copy(update={"base_prompt": new_prompt})
+        store.save(new_spec, overwrite=True)
+        refreshed += 1
+        output.success(f"refreshed {n}")
+
+    for n, why in skipped:
+        output.warn(f"skipped {n}: {why}")
+    if refreshed == 0 and not skipped:
+        output.info("all specialists already up-to-date")
+    else:
+        output.info(f"refreshed {refreshed} of {len(names)} specialist(s)")
+
+
+def templates() -> None:
+    """List built-in specialist templates."""
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("template")
+    table.add_column("role", overflow="fold")
+    table.add_column("tools", overflow="fold")
+    for name in sorted(TEMPLATES):
+        tmpl = TEMPLATES[name]
+        table.add_row(name, tmpl.role, ", ".join(tmpl.allowed_tools))
+    output.print_table(table)
+    output.info(
+        "[dim]Use one with: workforce hire <name> --from-template <template>[/dim]"
     )

@@ -23,6 +23,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "mypy>=1.10",
+    "ruff>=0.7",
 ]
 
 [project.scripts]
@@ -39,3 +40,25 @@ addopts = "-ra"
 python_version = "3.11"
 strict = true
 files = ["src/workforce", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["scripts"]  # throwaway smoke script, don't lint
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # bugbear (likely bugs)
+    "UP",  # pyupgrade (modernize syntax)
+]
+ignore = [
+    "E501",  # line length — already capped via formatter; some long URLs/strings stay
+    "B008",  # function calls in default args (Typer relies on this)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # tests sometimes need late imports for fixtures

@@ -17,7 +17,6 @@ from workforce.worktree import (
     is_repo_clean,
 )
 
-
 PROJECT_ID = "abc123def456"
 
 

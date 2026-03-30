@@ -20,10 +20,10 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
-    ThinkingBlock,
 )
 
-from workforce import mission, runner as runner_mod
+from workforce import mission
+from workforce import runner as runner_mod
 from workforce.mission import (
     MemoryDelta,
     MissionMeta,
@@ -39,7 +39,6 @@ from workforce.project import Project, ProjectStore
 from workforce.runner import RunResult, RunStatus
 from workforce.specialist import RosterStore, Specialist
 from workforce.worktree import WorktreeManager
-
 
 # ----- fixtures --------------------------------------------------------------
 
@@ -144,7 +143,7 @@ def _commit(repo_or_worktree: Path, msg: str, *, file: str = "x.txt", content: s
 
 
 def test_mission_id_format() -> None:
-    mid = generate_mission_id(now=dt.datetime(2026, 5, 2, 14, 12, 34, tzinfo=dt.timezone.utc))
+    mid = generate_mission_id(now=dt.datetime(2026, 5, 2, 14, 12, 34, tzinfo=dt.UTC))
     assert mid.startswith("m-20260502-141234-")
     assert re.fullmatch(r"m-\d{8}-\d{6}-[0-9a-f]{4}", mid)
 

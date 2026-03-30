@@ -31,7 +31,11 @@ from workforce import (
     output,
     parallel,
     paths,
+)
+from workforce import (
     project as project_mod,
+)
+from workforce import (
     specialist as specialist_mod,
 )
 from workforce.manager import (
@@ -271,7 +275,7 @@ def dispatch_command(
 def _dispatch_direct(
     proj: project_mod.Project,
     ticket: str,
-    spec: "specialist_mod.Specialist",
+    spec: specialist_mod.Specialist,
     roster_store: RosterStore,
     project_store: project_mod.ProjectStore,
     worktree_manager: WorktreeManager,
@@ -300,7 +304,7 @@ def _dispatch_direct(
         )
     except KeyboardInterrupt:
         output.warn("interrupted")
-        raise typer.Exit(code=130)
+        raise typer.Exit(code=130) from None
     except WorktreeError as e:
         output.die(str(e))
     output.rule()
@@ -356,7 +360,7 @@ def _dispatch_with_manager(
         )
     except KeyboardInterrupt:
         output.warn("interrupted")
-        raise typer.Exit(code=130)
+        raise typer.Exit(code=130) from None
     except ManagerError as e:
         output.die(f"manager: {e}")
 
@@ -453,7 +457,7 @@ def _dispatch_after_manager_single(
         )
     except KeyboardInterrupt:
         output.warn("interrupted")
-        raise typer.Exit(code=130)
+        raise typer.Exit(code=130) from None
     except WorktreeError as e:
         output.die(str(e))
     output.rule()
@@ -530,7 +534,7 @@ def _dispatch_after_manager_parallel(
             )
     except KeyboardInterrupt:
         output.warn("interrupted")
-        raise typer.Exit(code=130)
+        raise typer.Exit(code=130) from None
     except (ValidationError, ResolutionError, WorktreeError) as e:
         output.die(str(e))
 
@@ -618,9 +622,8 @@ def _confirm_decomposition(
     return typer.confirm("Proceed with this decomposition?", default=True)
 
 
-def _make_sub_renderer(task_id: str) -> "Any":
+def _make_sub_renderer(task_id: str) -> Any:
     """Per-sub-mission renderer that prefixes lines with [task_id]."""
-    base = _make_renderer()
     prefix = f"\\[[bold cyan]{task_id}[/bold cyan]] "
 
     def render(msg: Any) -> None:
@@ -1021,7 +1024,6 @@ def _render_replay_event(evt: dict[str, Any], *, show_thinking: bool) -> None:
     t = evt.get("_type")
     if t == "AssistantMessage":
         for block in evt.get("content") or []:
-            btype = type(block).__name__ if not isinstance(block, dict) else None
             if isinstance(block, dict):
                 if "text" in block:
                     text = (block["text"] or "").rstrip()
@@ -1182,6 +1184,70 @@ def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) ->
             title="[red]decomposition drift[/red]",
             title_align="left",
         ))
+
+
+@mission_sub.command("tail")
+def mission_tail(
+    mission_id: str = typer.Argument(..., help="Mission id."),
+    show_thinking: bool = typer.Option(
+        False, "--show-thinking", help="Include thinking blocks."
+    ),
+    follow: bool = typer.Option(
+        True, "--follow/--no-follow", "-f",
+        help="Keep watching for new events. Pass --no-follow to print existing events and exit.",
+    ),
+    poll_seconds: float = typer.Option(
+        0.5, "--poll", help="How often to check for new events (seconds).",
+    ),
+) -> None:
+    """Pretty-print a mission's events.jsonl as it's appended (or once, with --no-follow)."""
+    paths.ensure_layout()
+    proj, meta = _find_mission(mission_id)
+    mp = mission.mission_paths(proj.id, mission_id)
+    if not mp.events.is_file():
+        if isinstance(meta, ParallelMissionMeta):
+            output.die(
+                f"{mission_id} is a parent mission — tail each sub-mission individually:\n  "
+                + "\n  ".join(f"workforce mission tail {s.mission_id}" for s in meta.sub_missions)
+            )
+        output.die(f"no events log at {mp.events}")
+
+    label = (
+        meta.specialist if isinstance(meta, MissionMeta)
+        else f"({meta.decomposition_kind.value} parent)"
+    )
+    output.info(
+        f"[bold]tailing {mission_id}[/bold] — {proj.name} / {label}  "
+        f"[dim]({mp.events})[/dim]"
+    )
+    output.rule()
+
+    import time
+    pos = 0
+    try:
+        while True:
+            try:
+                with mp.events.open() as f:
+                    f.seek(pos)
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            evt = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        _render_replay_event(evt, show_thinking=show_thinking)
+                    pos = f.tell()
+            except FileNotFoundError:
+                pass
+            if not follow:
+                return
+            # Stop following once a ResultMessage closes the mission, but keep
+            # tailing through the memory-delta call's events if any.
+            time.sleep(poll_seconds)
+    except KeyboardInterrupt:
+        output.info("[dim](stopped)[/dim]")
 
 
 @mission_sub.command("clean")
@@ -1387,7 +1453,7 @@ def mission_prune(
 ) -> None:
     """Bulk-remove old mission worktrees. Mission logs and branches are kept."""
     paths.ensure_layout()
-    threshold = dt.datetime.now(dt.timezone.utc) - _parse_duration(older_than)
+    threshold = dt.datetime.now(dt.UTC) - _parse_duration(older_than)
 
     pstore = project_mod.ProjectStore()
     wm = WorktreeManager()

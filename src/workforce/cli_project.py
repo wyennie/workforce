@@ -18,7 +18,6 @@ from workforce.worktree import (
     has_commits,
 )
 
-
 sub = typer.Typer(
     name="project",
     help="Register repos and assign specialists to them.",
@@ -197,9 +196,31 @@ def show(project_ref: str = typer.Argument(..., help="Project name or id.", meta
     repo_exists = Path(proj.repo_path).is_dir()
     meta.add_row("repo present", "yes" if repo_exists else "[red]MISSING[/red]")
 
+    # Walk missions for counts + total cost across both single and parent metas.
+    import json as _json
     missions = pstore.missions_dir(proj.id)
-    n_missions = len([p for p in missions.iterdir() if p.is_dir()]) if missions.is_dir() else 0
+    n_missions = 0
+    total_cost = 0.0
+    if missions.is_dir():
+        for d in missions.iterdir():
+            if not d.is_dir():
+                continue
+            n_missions += 1
+            mp = d / "meta.json"
+            if not mp.is_file():
+                continue
+            try:
+                data = _json.loads(mp.read_text())
+            except (OSError, ValueError):
+                continue
+            # MissionMeta has cost_usd; ParallelMissionMeta has manager_cost_usd
+            # (sub-missions have their own dirs that we'll also walk above).
+            if "cost_usd" in data:
+                total_cost += float(data["cost_usd"])
+            elif "manager_cost_usd" in data:
+                total_cost += float(data["manager_cost_usd"])
     meta.add_row("recorded missions", str(n_missions))
+    meta.add_row("total cost (usd)", f"{total_cost:.4f}")
 
     output.raw(Panel(meta, title=f"project: {proj.name}", title_align="left"))
 

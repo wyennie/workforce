@@ -10,14 +10,13 @@ This is the layer the CLI's `dispatch` command calls into. It returns a
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import datetime as dt
 import json
 import re
 import secrets
 import subprocess
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -33,15 +32,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from workforce import paths, reviewer, runner
 from workforce.project import Project, ProjectStore
 from workforce.reviewer import Review, ReviewError
-from workforce.runner import EventCallback, RunLimits, RunResult, RunStatus
-from workforce.specialist import RosterStore, Specialist, SpecialistStats
-from workforce.worktree import WorktreeManager, WorktreeRef
-
+from workforce.runner import EventCallback, RunLimits, RunStatus
+from workforce.specialist import RosterStore, Specialist
+from workforce.worktree import WorktreeManager
 
 SCHEMA_VERSION = 1
 
 
-class MissionStatus(str, Enum):
+class MissionStatus(StrEnum):
     COMPLETED = "completed"
     ERROR = "error"
     WALL_TIMEOUT = "wall_timeout"
@@ -114,7 +112,7 @@ class MissionMeta(BaseModel):
 
 def generate_mission_id(*, now: dt.datetime | None = None) -> str:
     """`m-YYYYMMDD-HHMMSS-xxxx`. Sortable, branch-safe, distinctive prefix."""
-    now = now or dt.datetime.now(dt.timezone.utc)
+    now = now or dt.datetime.now(dt.UTC)
     rand = secrets.token_hex(2)  # 4 hex chars
     return f"m-{now:%Y%m%d-%H%M%S}-{rand}"
 
@@ -283,7 +281,7 @@ async def extract_memory_delta(
 
     try:
         await asyncio.wait_for(consume(), timeout=timeout_seconds)
-    except (asyncio.TimeoutError, Exception):
+    except (TimeoutError, Exception):
         return None, cost
 
     if not collected:
@@ -405,7 +403,7 @@ def last_assistant_text(messages: list[Any]) -> str:
 
 
 def _now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _final_status(run_status: RunStatus, has_violations: bool) -> MissionStatus:

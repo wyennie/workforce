@@ -30,7 +30,7 @@ def test_parse_duration_invalid_raises(bad: str) -> None:
 
 def test_parse_iso_z() -> None:
     parsed = _parse_iso_z("2026-05-02T14:12:34Z")
-    assert parsed == dt.datetime(2026, 5, 2, 14, 12, 34, tzinfo=dt.timezone.utc)
+    assert parsed == dt.datetime(2026, 5, 2, 14, 12, 34, tzinfo=dt.UTC)
 
 
 def test_truncate_short() -> None:

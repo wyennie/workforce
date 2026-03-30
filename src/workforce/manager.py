@@ -13,7 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from enum import Enum
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +25,7 @@ from claude_agent_sdk import (
     TextBlock,
     query,
 )
-from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 SCHEMA_VERSION = 1
 
@@ -40,7 +39,7 @@ MANAGER_ALLOWED_TOOLS = ["Read", "Glob", "Grep"]
 # ----- Models ---------------------------------------------------------------
 
 
-class DecompositionKind(str, Enum):
+class DecompositionKind(StrEnum):
     PARALLEL = "parallel"
     SEQUENTIAL = "sequential"
     SINGLE = "single"
@@ -168,8 +167,12 @@ flag this post-hoc, but it's better to prevent it here.
 ## Picking specialists
 
 You'll be told which specialists are already assigned to this project, with
-mission counts. **Prefer assigned specialists** — they have project memory
-from past missions and know this codebase.
+mission counts and a one-line role description for each. **Match role to
+task** — don't dispatch a frontend specialist to write backend tests just
+because they're available. **Prefer assigned specialists with relevant
+roles** — they have project memory from past missions and know this
+codebase. If no assigned specialist matches the task's domain, suggest a
+new one rather than misuse an existing one.
 
 If a task needs a specialty that no assigned specialist covers, suggest a
 new name and provide `template_hint` so Workforce can hire one for you.
@@ -555,7 +558,7 @@ async def run_manager(
 
     try:
         await asyncio.wait_for(consume(), timeout=max_wall_seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise ManagerError(
             f"manager exceeded wall-time limit ({max_wall_seconds:.0f}s)"
         ) from None

@@ -12,13 +12,12 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from enum import Enum
-from pathlib import Path
+from enum import StrEnum
 
 from workforce import paths
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     OK = "ok"
     WARN = "warn"
     FAIL = "fail"

@@ -77,6 +77,8 @@ app.command("hire")(cli_roster.hire)
 app.command("fire")(cli_roster.fire)
 app.command("roster")(cli_roster.roster)
 app.command("show")(cli_roster.show)
+app.command("templates")(cli_roster.templates)
+app.command("refresh")(cli_roster.refresh)
 
 
 # ----- project --------------------------------------------------------------
