@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -203,6 +204,27 @@ def dispatch_command(
         3, "--max-revisions",
         help="Hard cap on Reviewer rejection loops per sub-mission. Only applies with --review.",
     ),
+    window: bool = typer.Option(
+        False, "--window",
+        help=(
+            "Background the mission and pop up a separate terminal window "
+            "streaming its output. Returns the mission id immediately. "
+            "Requires --specialist (single-mission only)."
+        ),
+    ),
+    background: bool = typer.Option(
+        False, "--background",
+        help=(
+            "Background the mission and return immediately, without opening "
+            "a terminal window. Used by the Manager session — the shared "
+            "`workforce project tail` window picks up the new mission "
+            "automatically. Requires --specialist."
+        ),
+    ),
+    mission_id_override: str | None = typer.Option(
+        None, "--mission-id", hidden=True,
+        help="Internal: pre-allocated mission id used by --window/--background forks.",
+    ),
 ) -> None:
     """Dispatch a mission. The Manager plans it, then it runs.
 
@@ -211,6 +233,18 @@ def dispatch_command(
     to one specialist. Pass --specialist to skip the Manager and dispatch
     directly to a named specialist (cheaper for tiny tickets).
     """
+    if window and background:
+        output.die("--window and --background are mutually exclusive")
+    if window or background:
+        _dispatch_detached(
+            project_ref=project_ref, ticket=ticket, specialist=specialist,
+            mission_id_override=mission_id_override,
+            max_turns=max_turns, max_cost=max_cost, max_wall=max_wall,
+            review=review, max_revisions=max_revisions,
+            open_window=window,
+        )
+        return
+
     roster_store, project_store, worktree_manager = _stores()
 
     try:
@@ -220,25 +254,41 @@ def dispatch_command(
 
     repo_path = Path(proj.repo_path)
     if not repo_path.is_dir():
+        label = "workspace" if proj.kind == "workspace" else "repo"
         output.die(
             f"project {proj.name!r} points at {proj.repo_path}, which is missing. "
-            "Did you move the repo?"
+            f"Did you move the {label}?"
         )
 
     # Preflight: the source repo needs at least one commit and a clean tree.
-    # Cheap to check, expensive to discover after the Manager has run.
-    if not has_commits(repo_path):
-        output.die(
-            f"{proj.repo_path} has no commits yet. Run "
-            f"`git -C {proj.repo_path} commit --allow-empty -m initial` first."
-        )
-    clean, dirty_paths = is_repo_clean(repo_path)
-    if not clean:
-        preview = ", ".join(dirty_paths[:3]) + ("..." if len(dirty_paths) > 3 else "")
-        output.die(
-            f"{proj.repo_path} has uncommitted changes ({preview}). "
-            "Commit or stash before dispatching. (Untracked files are OK.)"
-        )
+    # Workspace projects skip both — they have no git state.
+    if proj.kind == "repo":
+        if not has_commits(repo_path):
+            output.die(
+                f"{proj.repo_path} has no commits yet. Run "
+                f"`git -C {proj.repo_path} commit --allow-empty -m initial` first."
+            )
+        clean, dirty_paths = is_repo_clean(repo_path)
+        if not clean:
+            preview = ", ".join(dirty_paths[:3]) + ("..." if len(dirty_paths) > 3 else "")
+            output.die(
+                f"{proj.repo_path} has uncommitted changes ({preview}). "
+                "Commit or stash before dispatching. (Untracked files are OK.)"
+            )
+
+    # Workspace projects don't support the git-flavored flags. Reject them
+    # loudly here so the user doesn't discover the limitation mid-mission.
+    if proj.kind == "workspace":
+        if auto_merge or merge_into is not None:
+            output.die(
+                "--auto-merge / --merge-into don't apply to workspace projects "
+                "(no branches to merge)."
+            )
+        if review:
+            output.die(
+                "workspace projects don't support --review yet (the Reviewer is "
+                "git-only, it diffs the worktree against base_sha)."
+            )
 
     limits = RunLimits(
         max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall
@@ -259,10 +309,15 @@ def dispatch_command(
             auto_merge=auto_merge or merge_into is not None,
             merge_into=merge_into,
             review=review, max_revisions=max_revisions,
+            mission_id=mission_id_override,
         )
         return
 
-    # Default: Manager plans, then we route based on its decision.
+    # Manager-driven dispatch may decide to fan out across specialists in
+    # parallel. For workspace projects, parallel sub-missions all share the
+    # project directory (no worktree isolation) — safety comes from the
+    # Manager validating non-overlapping `owns_paths` at plan time and the
+    # `can_use_tool` callback enforcing those lanes at write time.
     _dispatch_with_manager(
         proj, ticket, roster_store, project_store, worktree_manager,
         limits=limits, skip_confirm=yes, auto_staff=auto_staff,
@@ -286,6 +341,7 @@ def _dispatch_direct(
     merge_into: str | None = None,
     review: bool = False,
     max_revisions: int = 3,
+    mission_id: str | None = None,
 ) -> None:
     """Single specialist, no Manager. The --specialist X bypass."""
     output.info(
@@ -301,6 +357,7 @@ def _dispatch_direct(
                 worktree_manager=worktree_manager, limits=limits,
                 on_message=_make_renderer(),
                 review=review, max_revisions=max_revisions,
+                mission_id=mission_id,
             )
         )
     except KeyboardInterrupt:
@@ -314,6 +371,82 @@ def _dispatch_direct(
         _run_auto_merge_single(proj, meta, target=merge_into)
     if meta.status is not MissionStatus.COMPLETED:
         raise typer.Exit(code=1)
+
+
+def _dispatch_detached(
+    *,
+    project_ref: str,
+    ticket: str,
+    specialist: str | None,
+    mission_id_override: str | None,
+    max_turns: int,
+    max_cost: float,
+    max_wall: float,
+    review: bool,
+    max_revisions: int,
+    open_window: bool,
+) -> None:
+    """`--window` / `--background` shared path.
+
+    Pre-allocates the mission id, forks a detached `workforce dispatch ...
+    --mission-id <id>` subprocess that runs the actual mission, and prints
+    the id immediately. If `open_window` is True, also pops up a terminal
+    tailing this single mission's output (one window per dispatch).
+    For `--background` (open_window=False) the caller is expected to have
+    a `workforce project tail` window already open — the Manager session
+    runs one such shared window and uses --background for every dispatch.
+    """
+    flag = "--window" if open_window else "--background"
+    if specialist is None:
+        output.die(
+            f"{flag} requires --specialist (single-mission only). "
+            "For multi-mission dispatch from the Manager, use `workforce manage`."
+        )
+
+    mission_id = mission_id_override or mission.generate_mission_id()
+
+    # Re-invoke ourselves without the detach flag, with the pinned mission id.
+    # `python -m workforce` runs the same package the parent runs regardless
+    # of pip/pipx install path.
+    argv: list[str] = [
+        sys.executable, "-m", "workforce", "dispatch", project_ref, ticket,
+        "--specialist", specialist,
+        "--mission-id", mission_id,
+        "--max-turns", str(max_turns),
+        "--max-cost", str(max_cost),
+        "--max-wall", str(max_wall),
+    ]
+    if review:
+        argv += ["--review", "--max-revisions", str(max_revisions)]
+
+    # Detach so the child survives this process exiting. stdout/stderr go to
+    # /dev/null — the tail window renders from events.jsonl, not stdout.
+    try:
+        subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        output.die(f"could not spawn background dispatch: {e}")
+
+    output.success(f"dispatched mission {mission_id}")
+
+    if open_window:
+        from workforce.terminal import open_terminal_window
+        spawned = open_terminal_window(
+            title=f"workforce: {mission_id}",
+            command=["workforce", "mission", "tail", mission_id, "--show-thinking"],
+        )
+        if spawned:
+            output.info("[dim]live output is in the new terminal window.[/dim]")
+        else:
+            output.info(
+                "could not open a terminal window — watch with: "
+                f"[bold]workforce mission tail {mission_id}[/bold]"
+            )
 
 
 # ----- parallel dispatch -----------------------------------------------------
@@ -807,6 +940,9 @@ def _run_auto_merge_single(
     if meta.status is not MissionStatus.COMPLETED:
         output.warn("auto-merge skipped: mission did not complete cleanly")
         return
+    # Workspace missions have no branch; the CLI rejects --auto-merge for them
+    # before we get here, but assert for type narrowing.
+    assert meta.branch is not None, "auto-merge requires a repo-kind mission"
     plan = [parallel.MergeStep(
         task_id="single", branch=meta.branch,
         sub_mission_id=meta.mission_id, status=meta.status,
@@ -949,16 +1085,21 @@ def _print_summary(meta: mission.MissionMeta) -> None:
         MissionStatus.REVIEW_REJECTED: "[red]review_rejected[/red]",
     }
     output.info(f"mission {meta.mission_id}: {style[meta.status]}")
-    output.info(f"  branch:    {meta.branch}")
-    output.info(f"  worktree:  {meta.worktree_path}")
+    if meta.branch is None:
+        # Workspace mission — no branch, no commits, just a working dir.
+        output.info(f"  workspace: {meta.worktree_path}")
+    else:
+        output.info(f"  branch:    {meta.branch}")
+        output.info(f"  worktree:  {meta.worktree_path}")
     output.info(f"  duration:  {meta.duration_seconds:.1f}s")
     output.info(f"  cost:      ${meta.cost_usd:.4f}")
     output.info(f"  turns:     {meta.turn_count}")
-    output.info(f"  commits:   {len(meta.commits)}")
-    if meta.commits and len(meta.commits) < 2:
-        output.warn(
-            "  only one commit — check if the specialist is committing as it goes"
-        )
+    if meta.branch is not None:
+        output.info(f"  commits:   {len(meta.commits)}")
+        if meta.commits and len(meta.commits) < 2:
+            output.warn(
+                "  only one commit — check if the specialist is committing as it goes"
+            )
     if meta.reviews:
         approved = meta.reviews[-1].approved
         verdict = "approved" if approved else "rejected"
@@ -1007,7 +1148,11 @@ def _load_any_meta(
 
 
 def _find_mission(mission_id: str) -> tuple[project_mod.Project, MissionMeta | ParallelMissionMeta]:
-    """Locate a mission (single, parent, or sub) across all registered projects."""
+    """Locate a mission (single, parent, or sub) across all registered projects.
+
+    Requires meta.json to exist — for in-progress missions that haven't yet
+    written meta, use `_find_mission_dir` instead.
+    """
     pstore = project_mod.ProjectStore()
     for proj in pstore.list():
         meta = _load_any_meta(proj.id, mission_id)
@@ -1015,6 +1160,23 @@ def _find_mission(mission_id: str) -> tuple[project_mod.Project, MissionMeta | P
             return proj, meta
     output.die(f"no mission with id {mission_id!r} found in any project")
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _find_mission_dir(
+    mission_id: str,
+) -> tuple[project_mod.Project, mission.MissionPaths] | None:
+    """Locate a mission's on-disk directory by id, without requiring meta.json.
+
+    Returns (project, mission_paths) if a `<project>/missions/<mission_id>/`
+    directory exists. Used by `mission tail` so it can attach to an in-progress
+    mission whose meta.json hasn't been written yet.
+    """
+    pstore = project_mod.ProjectStore()
+    for proj in pstore.list():
+        mp = mission.mission_paths(proj.id, mission_id)
+        if mp.root.is_dir():
+            return proj, mp
+    return None
 
 
 def _list_project_missions(
@@ -1150,6 +1312,49 @@ def replay_command(
             _render_replay_event(evt, show_thinking=show_thinking)
 
 
+def render_labeled_event(label: str, evt: dict[str, Any], *, show_thinking: bool) -> None:
+    """Render one event line with a per-mission prefix, for the project-tail
+    multi-mission stream. Public (no leading underscore) so cli_project can
+    import it without crossing private boundaries.
+
+    Filters more aggressively than `_render_replay_event` because output from
+    multiple missions is interleaved — we drop SystemMessage init/setup noise
+    and tool-result echoes; only assistant text, tool calls, and result
+    summaries survive.
+    """
+    prefix = f"[bold cyan][{label}][/bold cyan]"
+    t = evt.get("_type")
+    if t == "AssistantMessage":
+        for block in evt.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if "text" in block:
+                text = (block["text"] or "").rstrip()
+                if text:
+                    output.info(f"{prefix} {text}")
+            elif "thinking" in block and show_thinking:
+                output.info(
+                    f"{prefix} [dim italic]thinking: {block['thinking']!r}[/dim italic]"
+                )
+            elif "name" in block and "input" in block:
+                args = _summarize_tool_args(block["name"], block.get("input") or {})
+                output.info(f"{prefix} [dim]→ {block['name']}({_truncate(args, 80)})[/dim]")
+    elif t == "UserMessage":
+        # Surface tool errors only; successful tool results would drown the stream.
+        content = evt.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("is_error"):
+                    preview = _truncate(repr(block.get("content")), 120)
+                    output.warn(f"{prefix} ← tool error: {preview}")
+    elif t == "ResultMessage":
+        cost = evt.get("total_cost_usd") or 0.0
+        output.info(
+            f"{prefix} [dim]turns={evt.get('num_turns')} "
+            f"cost=${cost:.4f} (mission ended)[/dim]"
+        )
+
+
 def _render_replay_event(evt: dict[str, Any], *, show_thinking: bool) -> None:
     t = evt.get("_type")
     if t == "AssistantMessage":
@@ -1217,9 +1422,12 @@ def _show_single_meta(proj: project_mod.Project, meta: MissionMeta) -> None:
     grid.add_row("duration", f"{meta.duration_seconds:.1f}s")
     grid.add_row("cost", f"${meta.cost_usd:.4f}")
     grid.add_row("turns", str(meta.turn_count))
-    grid.add_row("branch", meta.branch)
-    grid.add_row("worktree", meta.worktree_path)
-    grid.add_row("commits", str(len(meta.commits)))
+    if meta.branch is None:
+        grid.add_row("workspace", meta.worktree_path or "(unknown)")
+    else:
+        grid.add_row("branch", meta.branch)
+        grid.add_row("worktree", meta.worktree_path or "(unknown)")
+        grid.add_row("commits", str(len(meta.commits)))
     if meta.error_detail:
         grid.add_row("error", meta.error_detail)
 
@@ -1332,20 +1540,37 @@ def mission_tail(
 ) -> None:
     """Pretty-print a mission's events.jsonl as it's appended (or once, with --no-follow)."""
     paths.ensure_layout()
-    proj, meta = _find_mission(mission_id)
-    mp = mission.mission_paths(proj.id, mission_id)
-    if not mp.events.is_file():
-        if isinstance(meta, ParallelMissionMeta):
-            output.die(
-                f"{mission_id} is a parent mission — tail each sub-mission individually:\n  "
-                + "\n  ".join(f"workforce mission tail {s.mission_id}" for s in meta.sub_missions)
-            )
-        output.die(f"no events log at {mp.events}")
 
-    label = (
-        meta.specialist if isinstance(meta, MissionMeta)
-        else f"({meta.decomposition_kind.value} parent)"
-    )
+    # The mission may not have written meta.json yet (in-progress, freshly
+    # spawned by `dispatch --window`). Fall back to a directory scan so tail
+    # can attach to a mission the moment its dir exists.
+    found = _find_mission_dir(mission_id)
+    if found is None:
+        # Wait briefly for the dispatch subprocess to create the dir, then bail.
+        import time as _time
+        for _ in range(40):  # ~10s
+            _time.sleep(0.25)
+            found = _find_mission_dir(mission_id)
+            if found is not None:
+                break
+    if found is None:
+        output.die(f"no mission with id {mission_id!r} found in any project")
+    proj, mp = found
+
+    meta = _load_any_meta(proj.id, mission_id)
+    if isinstance(meta, ParallelMissionMeta):
+        output.die(
+            f"{mission_id} is a parent mission — tail each sub-mission individually:\n  "
+            + "\n  ".join(f"workforce mission tail {s.mission_id}" for s in meta.sub_missions)
+        )
+
+    label: str
+    if isinstance(meta, MissionMeta):
+        label = meta.specialist
+    elif meta is None:
+        label = "(running)"
+    else:
+        label = f"({meta.decomposition_kind.value} parent)"
     output.info(
         f"[bold]tailing {mission_id}[/bold] — {proj.name} / {label}  "
         f"[dim]({mp.events})[/dim]"
@@ -1400,6 +1625,15 @@ def mission_clean(
             f"{mission_id} is a parent mission; clean each sub-mission instead:\n  "
             + "\n  ".join(f"workforce mission clean {s.mission_id}" for s in meta.sub_missions)
         )
+    if meta.branch is None:
+        # Workspace mission — no worktree was ever created. Nothing to clean.
+        output.info(
+            f"workspace mission — nothing to clean (mission ran in {meta.worktree_path})"
+        )
+        return
+    # Repo missions always populate worktree_path; this is a tautology for type
+    # narrowing.
+    assert meta.worktree_path is not None
     wt_path = Path(meta.worktree_path)
 
     if not wt_path.exists():
@@ -1593,6 +1827,9 @@ def mission_prune(
             # Parent metas have no worktree of their own; their subs do.
             if not isinstance(meta, MissionMeta):
                 continue
+            # Workspace missions have no worktree to remove.
+            if meta.branch is None or meta.worktree_path is None:
+                continue
             try:
                 started = _parse_iso_z(meta.started_at)
             except ValueError:
@@ -1613,6 +1850,9 @@ def mission_prune(
         output.info(f"{action} {meta.mission_id} ({proj.name}, {meta.started_at})")
         if dry_run:
             continue
+        # Workspace missions are filtered out when building `candidates`; this
+        # assert is just for type narrowing.
+        assert meta.worktree_path is not None
         try:
             wm.remove(Path(proj.repo_path), Path(meta.worktree_path), force=True)
         except Exception as e:

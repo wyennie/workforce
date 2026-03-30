@@ -234,7 +234,9 @@ def test_validate_overlap_raises(repo: Path) -> None:
         Task(id="b", description="y", owns_paths=["src/auth/**"], depends_on=["contract"]),
         contract_needed=True,
     )
-    with pytest.raises(ValidationError, match="both claim files"):
+    # Pattern-level overlap fires before file-set overlap and uses a different
+    # message; both are caught by the same exception type.
+    with pytest.raises(ValidationError, match="overlapping path lanes|both claim files"):
         validate_decomposition(d, repo_path=repo)
 
 
@@ -269,11 +271,24 @@ def test_validate_overlap_ok_when_dependent(repo: Path) -> None:
     validate_decomposition(d, repo_path=repo)  # no raise
 
 
-def test_validate_skips_overlap_check_without_repo() -> None:
-    """If caller doesn't pass repo_path, overlap check is silent."""
+def test_validate_pattern_overlap_fires_without_repo() -> None:
+    """Pattern overlap is filesystem-independent and runs even without a repo_path.
+    File-set overlap is the only part that requires a real path."""
     d = _build(
         Task(id="a", description="x", owns_paths=["src/**"], depends_on=["contract"]),
         Task(id="b", description="y", owns_paths=["src/auth/**"], depends_on=["contract"]),
+        contract_needed=True,
+    )
+    with pytest.raises(ValidationError, match="overlapping path lanes"):
+        validate_decomposition(d)
+
+
+def test_validate_disjoint_lanes_pass_without_repo() -> None:
+    """Two tasks with non-overlapping patterns validate cleanly when no
+    filesystem is given (workspace dir that doesn't exist yet, etc.)."""
+    d = _build(
+        Task(id="a", description="x", owns_paths=["docs/**"], depends_on=["contract"]),
+        Task(id="b", description="y", owns_paths=["src/**"], depends_on=["contract"]),
         contract_needed=True,
     )
     validate_decomposition(d)  # no raise

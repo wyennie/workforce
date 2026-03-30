@@ -411,6 +411,215 @@ def test_dispatch_parallel_full_flow(
     # sub-mission should have completed successfully so we infer it didn't crash.
 
 
+@pytest.fixture
+def workspace_stores_and_project(
+    isolated_home: Path, tmp_path: Path,
+) -> tuple[RosterStore, ProjectStore, WorktreeManager, Project]:
+    """Workspace-kind project: plain dir, no git, three assigned specialists."""
+    isolated_home.mkdir(parents=True, exist_ok=True)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    rs = RosterStore()
+    ps = ProjectStore()
+    wm = WorktreeManager()
+    rs.save(Specialist.from_template("aria", "backend"))
+    rs.save(Specialist.from_template("ben", "frontend"))
+    rs.save(Specialist.from_template("casey", "tester"))
+    proj = Project(
+        id="def456abc789",
+        name="myws",
+        repo_path=str(ws),
+        kind="workspace",
+        assigned_specialists=["aria", "ben", "casey"],
+    )
+    ps.save(proj)
+    return rs, ps, wm, proj
+
+
+def _decomp_workspace_three_tasks() -> Decomposition:
+    """Three disjoint workspace lanes — distinct subdirs, no overlap."""
+    return Decomposition(
+        ticket="t",
+        kind=DecompositionKind.PARALLEL,
+        rationale="r",
+        contract=Contract(needed=False, path="", body=""),
+        tasks=[
+            Task(
+                id="listings",
+                description="scrape",
+                owns_paths=["listings/**"],
+                depends_on=[],
+                suggested_specialist="aria",
+            ),
+            Task(
+                id="applications",
+                description="prefill",
+                owns_paths=["applications/**"],
+                depends_on=[],
+                suggested_specialist="ben",
+            ),
+            Task(
+                id="reports",
+                description="report",
+                owns_paths=["reports/**"],
+                depends_on=[],
+                suggested_specialist="casey",
+            ),
+        ],
+        merge_order=["listings", "applications", "reports"],
+    )
+
+
+def test_dispatch_parallel_workspace_full_flow(
+    workspace_stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """Three parallel sub-missions in a workspace project: all complete in the
+    shared workspace dir, none have branches/base_sha, and the runner gets a
+    can_use_tool callback for each (the lane enforcement)."""
+    rs, ps, wm, proj = workspace_stores_and_project
+    decomp = _decomp_workspace_three_tasks()
+
+    runner_calls: list[dict[str, Any]] = []
+
+    async def spy_runner(**kwargs: Any) -> RunResult:
+        runner_calls.append({
+            "cwd": kwargs.get("cwd"),
+            "can_use_tool": kwargs.get("can_use_tool"),
+        })
+        return await _fake_runner()(**kwargs)
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        with patch.object(runner_mod, "run_specialist", spy_runner):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                result = asyncio.run(
+                    dispatch_parallel(
+                        project=proj,
+                        ticket="daily job hunt",
+                        roster_store=rs,
+                        project_store=ps,
+                        worktree_manager=wm,
+                        confirm=lambda _d, _r: True,
+                        parent_mission_id="m-ws-parent",
+                    )
+                )
+
+    assert result.parent_meta.status is ParallelStatus.COMPLETED
+    assert len(result.sub_metas) == 3
+    for m in result.sub_metas:
+        assert m.status is MissionStatus.COMPLETED
+        # No git: branch/base_sha are None and worktree_path is the workspace dir.
+        assert m.branch is None
+        assert m.base_sha is None
+        assert m.worktree_path == str(Path(proj.repo_path))
+
+    # All three runs share the same cwd (the workspace), each with their own
+    # ownership callback.
+    assert len(runner_calls) == 3
+    for call in runner_calls:
+        assert call["cwd"] == Path(proj.repo_path)
+        assert call["can_use_tool"] is not None
+
+
+def test_workspace_parallel_callbacks_enforce_distinct_lanes(
+    workspace_stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """The callback handed to each sub-mission allows in-lane writes and denies
+    cross-lane writes — we verify by exercising the callback directly."""
+    from claude_agent_sdk import (
+        PermissionResultAllow,
+        PermissionResultDeny,
+        ToolPermissionContext,
+    )
+
+    rs, ps, wm, proj = workspace_stores_and_project
+    decomp = _decomp_workspace_three_tasks()
+
+    callbacks_by_cwd: list[Any] = []
+
+    async def spy_runner(**kwargs: Any) -> RunResult:
+        callbacks_by_cwd.append((kwargs.get("on_message"), kwargs.get("can_use_tool")))
+        return await _fake_runner()(**kwargs)
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        with patch.object(runner_mod, "run_specialist", spy_runner):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                asyncio.run(
+                    dispatch_parallel(
+                        project=proj,
+                        ticket="daily job hunt",
+                        roster_store=rs,
+                        project_store=ps,
+                        worktree_manager=wm,
+                        confirm=lambda _d, _r: True,
+                        parent_mission_id="m-ws-enforce",
+                    )
+                )
+
+    # Each callback should let its own lane through and deny others' lanes.
+    assert len(callbacks_by_cwd) == 3
+    ctx = ToolPermissionContext(signal=None, suggestions=[], tool_use_id="t1")
+
+    # Pull the three callbacks; the order depends on dispatch order (no deps,
+    # so all three run in wave 1 — order not guaranteed). Test each against
+    # all three lane patterns.
+    listings_path = "listings/jobs.json"
+    applications_path = "applications/job-1.md"
+    reports_path = "reports/summary.md"
+    for _on_msg, cb in callbacks_by_cwd:
+        # Each callback admits exactly ONE of the three lanes.
+        results = [
+            asyncio.run(cb("Write", {"file_path": p, "content": ""}, ctx))
+            for p in (listings_path, applications_path, reports_path)
+        ]
+        n_allow = sum(1 for r in results if isinstance(r, PermissionResultAllow))
+        n_deny = sum(1 for r in results if isinstance(r, PermissionResultDeny))
+        assert n_allow == 1, f"expected exactly one lane allowed; got {results}"
+        assert n_deny == 2
+
+
+def test_workspace_parallel_overlapping_owns_rejected_at_plan_time(
+    workspace_stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """If the Manager produces overlapping lanes, validation fails before any
+    agent runs. Sparse workspace dir (no files) — pattern overlap catches it."""
+    rs, ps, wm, proj = workspace_stores_and_project
+    bad = Decomposition(
+        ticket="t",
+        kind=DecompositionKind.PARALLEL,
+        rationale="r",
+        contract=Contract(needed=False, path="", body=""),
+        tasks=[
+            Task(
+                id="a", description="x",
+                owns_paths=["outputs/*.json"],
+                depends_on=[],
+                suggested_specialist="aria",
+            ),
+            Task(
+                id="b", description="y",
+                owns_paths=["outputs/results.json"],
+                depends_on=[],
+                suggested_specialist="ben",
+            ),
+        ],
+        merge_order=["a", "b"],
+    )
+
+    with patch.object(manager, "run_manager", _fake_manager(bad)):
+        with pytest.raises(manager.ValidationError, match="overlapping path lanes"):
+            asyncio.run(
+                dispatch_parallel(
+                    project=proj,
+                    ticket="t",
+                    roster_store=rs,
+                    project_store=ps,
+                    worktree_manager=wm,
+                    confirm=lambda _d, _r: True,
+                    parent_mission_id="m-ws-bad",
+                )
+            )
+
+
 def test_dispatch_parallel_user_cancels(
     stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
 ) -> None:
@@ -509,7 +718,7 @@ def test_dispatch_parallel_validation_failure(
     )
 
     with patch.object(manager, "run_manager", _fake_manager(bad)):
-        with pytest.raises(manager.ValidationError, match="both claim files"):
+        with pytest.raises(manager.ValidationError, match="overlapping path lanes|both claim files"):
             asyncio.run(
                 dispatch_parallel(
                     project=proj,

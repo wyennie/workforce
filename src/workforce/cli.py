@@ -8,7 +8,9 @@ from __future__ import annotations
 import typer
 from rich.table import Table
 
-from workforce import cli_mission, cli_project, cli_roster, doctor, output
+from workforce import cli_mission, cli_project, cli_roster, doctor, manage, output, paths
+from workforce import project as project_mod
+from workforce.specialist import RosterStore
 from workforce.version import __version__
 
 app = typer.Typer(
@@ -93,3 +95,37 @@ app.command("missions")(cli_mission.missions_command)
 app.command("replay")(cli_mission.replay_command)
 app.add_typer(cli_mission.mission_sub)
 app.add_typer(cli_mission.branches_sub)
+
+
+# ----- manage (interactive Manager chat) ------------------------------------
+
+
+@app.command("manage")
+def manage_command(
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    yolo: bool = typer.Option(
+        False, "--yolo",
+        help=(
+            "Skip per-tool permission prompts (bypassPermissions). The Manager "
+            "can dispatch and edit without asking. Use with care; default is "
+            "to confirm before each tool call."
+        ),
+    ),
+) -> None:
+    """Open an interactive Manager chat session for a project.
+
+    Talk with the Manager like you would with Claude Code. It dispatches
+    workers via `workforce dispatch ... --window`, so each spawned mission
+    pops up its own terminal window streaming the worker's output. The
+    Manager carries context across turns and can answer questions about
+    ongoing or past missions.
+    """
+    paths.ensure_layout()
+    pstore = project_mod.ProjectStore()
+    rstore = RosterStore()
+    try:
+        proj = pstore.resolve(project_ref)
+    except project_mod.ProjectError as e:
+        output.die(str(e))
+    code = manage.manage_command_main(proj, rstore, yolo=yolo)
+    raise typer.Exit(code=code)

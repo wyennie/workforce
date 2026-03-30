@@ -141,6 +141,42 @@ def test_project_extra_fields_forbidden() -> None:
         )
 
 
+def test_project_kind_defaults_to_repo() -> None:
+    p = Project(id="abc123def456", name="x", repo_path="/tmp/x")
+    assert p.kind == "repo"
+
+
+def test_project_kind_workspace_explicit() -> None:
+    p = Project(id="abc123def456", name="x", repo_path="/tmp/x", kind="workspace")
+    assert p.kind == "workspace"
+
+
+def test_project_kind_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError):
+        Project(id="abc123def456", name="x", repo_path="/tmp/x", kind="bogus")  # type: ignore[arg-type]
+
+
+def test_workspace_kind_roundtrip(store: ProjectStore) -> None:
+    p = Project(id="abc123def456", name="myws", repo_path="/tmp/x", kind="workspace")
+    store.save(p)
+    loaded = store.load_by_id(p.id)
+    assert loaded.kind == "workspace"
+    assert loaded == p
+
+
+def test_kind_defaults_to_repo_for_legacy_toml(store: ProjectStore) -> None:
+    """Existing project.toml files written before `kind` existed must still load."""
+    pid = "abc123def456"
+    project_dir = store._dir(pid)
+    project_dir.mkdir(parents=True)
+    (project_dir / "project.toml").write_text(
+        f'schema_version = 1\nid = "{pid}"\nname = "legacy"\nrepo_path = "/tmp/legacy"\n'
+        'assigned_specialists = []\n'
+    )
+    loaded = store.load_by_id(pid)
+    assert loaded.kind == "repo"
+
+
 # ----- Store ----------------------------------------------------------------
 
 

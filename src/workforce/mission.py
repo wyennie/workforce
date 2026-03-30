@@ -18,7 +18,7 @@ import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -89,9 +89,11 @@ class MissionMeta(BaseModel):
     specialist: str
     model: str
     ticket: str
-    branch: str
-    worktree_path: str
-    base_sha: str
+    # `branch` and `base_sha` are None for workspace-kind projects (no git);
+    # `worktree_path` then holds the workspace dir itself for display purposes.
+    branch: str | None = None
+    worktree_path: str | None = None
+    base_sha: str | None = None
     started_at: str  # ISO-8601 UTC
     ended_at: str
     duration_seconds: float
@@ -131,6 +133,19 @@ SUCCESS_CRITERIA = """\
 """
 
 
+WORKSPACE_SUCCESS_CRITERIA = """\
+## Success criteria
+
+- Save your work to files in this directory before you finish. The next
+  mission on this project will see them; nothing else persists.
+- No commits, no branches — this is a plain working directory.
+- Final assistant message describes what you did and where you wrote it,
+  briefly.
+- If the ticket can't be completed cleanly, leave a NOTES.md explaining
+  what's blocking you so the next run can pick up.
+"""
+
+
 def compose_system_prompt(
     spec: Specialist,
     *,
@@ -167,27 +182,38 @@ def compose_user_prompt(
     *,
     extra_context: str | None = None,
     working_directory: str | None = None,
+    kind: Literal["repo", "workspace"] = "repo",
 ) -> str:
     """User prompt = (cwd hint) + ticket + (extra context) + success criteria.
 
-    `working_directory` should be the absolute path of the worktree. We name
-    it explicitly because Claude has stale defaults (e.g. `/root/repo/...`)
-    that waste 1-2 turns at the start of every mission while the model
-    discovers its actual cwd via `pwd`.
+    `working_directory` should be the absolute path of the worktree (repo kind)
+    or the workspace directory (workspace kind). We name it explicitly because
+    Claude has stale defaults (e.g. `/root/repo/...`) that waste 1-2 turns at
+    the start of every mission while the model discovers its actual cwd via
+    `pwd`.
 
     `extra_context` is for orchestration-level material the specialist should
     treat as authoritative (e.g. an API contract from the parallel Manager
     or reviewer feedback from a previous round). Wrapped in an XML tag so
     the model treats it as inline data, not prose.
+
+    `kind` selects the success-criteria block: repo missions are commit-driven;
+    workspace missions write files to a persistent dir, no git.
     """
     parts: list[str] = []
     if working_directory:
-        parts.append(
+        cwd_hint = (
             f"## Working directory\n\n"
             f"You are operating in `{working_directory}`. ALL file paths in tool "
             "calls should be either absolute under this directory or relative "
             "to it. Do not assume `/root/repo` or any other default location."
         )
+        if kind == "workspace":
+            cwd_hint += (
+                " This directory is the project's persistent state — outputs you "
+                "save here will be visible to the next mission."
+            )
+        parts.append(cwd_hint)
     parts.append(f"## Ticket\n\n{ticket.strip()}")
     if extra_context and extra_context.strip():
         parts.append(
@@ -195,7 +221,7 @@ def compose_user_prompt(
             + extra_context.strip()
             + "\n</extra_context>"
         )
-    parts.append(SUCCESS_CRITERIA)
+    parts.append(WORKSPACE_SUCCESS_CRITERIA if kind == "workspace" else SUCCESS_CRITERIA)
     return "\n\n".join(parts)
 
 
@@ -412,6 +438,18 @@ def _final_status(run_status: RunStatus, has_violations: bool) -> MissionStatus:
     return MissionStatus(run_status.value)
 
 
+@dataclass(frozen=True)
+class _Env:
+    """Mission execution environment — uniform across repo and workspace kinds.
+
+    For repo kind, `branch` and `base_sha` come from the worktree; for workspace
+    kind, both are None and `cwd` is the workspace directory itself.
+    """
+    cwd: Path
+    branch: str | None
+    base_sha: str | None
+
+
 async def dispatch(
     *,
     project: Project,
@@ -430,6 +468,8 @@ async def dispatch(
     review: bool = False,
     max_revisions: int = 3,
     contract: str | None = None,
+    owns_paths: list[str] | None = None,
+    excludes_paths: list[str] | None = None,
 ) -> MissionMeta:
     """Run one mission end-to-end. See module docstring."""
     limits = limits or RunLimits()
@@ -449,33 +489,45 @@ async def dispatch(
         project_memory=project_memory,
     )
 
-    # Create worktree, optionally forking from another task's branch.
+    # Set up the execution environment. Repo missions get a fresh worktree;
+    # workspace missions run directly in the project directory.
     repo_path = Path(project.repo_path)
-    wt = worktree_manager.create(
-        repo_path, project.id, mission_id, start_point=start_point
-    )
+    if project.kind == "workspace":
+        if start_point is not None or additional_merges:
+            raise ValueError(
+                "start_point and additional_merges only apply to repo-kind "
+                "projects (workspace projects have no branches to fork or merge)"
+            )
+        env = _Env(cwd=repo_path, branch=None, base_sha=None)
+    else:
+        wt = worktree_manager.create(
+            repo_path, project.id, mission_id, start_point=start_point
+        )
+        env = _Env(cwd=wt.worktree_path, branch=wt.branch, base_sha=wt.base_sha)
 
-    # User prompt now that we know the worktree's path — name it explicitly so
-    # the model doesn't waste turns rediscovering its cwd.
+    # User prompt now that we know the cwd — name it explicitly so the model
+    # doesn't waste turns rediscovering its cwd.
     user_prompt = compose_user_prompt(
         ticket,
         extra_context=extra_context,
-        working_directory=str(wt.worktree_path),
+        working_directory=str(env.cwd),
+        kind=project.kind,
     )
 
     # Merge any additional dependency branches into the worktree before the
     # specialist starts (sequential multi-dep case). On conflict, abort and
-    # bail this mission with a clear status.
+    # bail this mission with a clear status. Repo-only by construction (the
+    # check above rejects this for workspace projects).
     if additional_merges:
         for merge_branch in additional_merges:
             r = subprocess.run(
                 ["git", "merge", "--no-ff", merge_branch],
-                cwd=wt.worktree_path, capture_output=True, text=True, check=False,
+                cwd=env.cwd, capture_output=True, text=True, check=False,
             )
             if r.returncode != 0:
                 subprocess.run(
                     ["git", "merge", "--abort"],
-                    cwd=wt.worktree_path, capture_output=True, text=True, check=False,
+                    cwd=env.cwd, capture_output=True, text=True, check=False,
                 )
                 err = (r.stderr.strip() or r.stdout.strip())[:200]
                 ended_iso = _now_iso()
@@ -486,9 +538,9 @@ async def dispatch(
                     specialist=specialist.name,
                     model=specialist.model,
                     ticket=ticket,
-                    branch=wt.branch,
-                    worktree_path=str(wt.worktree_path),
-                    base_sha=wt.base_sha,
+                    branch=env.branch,
+                    worktree_path=str(env.cwd),
+                    base_sha=env.base_sha,
                     started_at=started_iso,
                     ended_at=ended_iso,
                     duration_seconds=0.0,
@@ -516,6 +568,18 @@ async def dispatch(
         if on_message is not None:
             on_message(msg)
 
+    # Build the path-ownership callback if the Manager declared a lane for
+    # this sub-mission. No lane → no enforcement (single-specialist or
+    # legacy code paths behave exactly as before).
+    can_use_tool = None
+    if owns_paths:
+        from workforce.permissions import make_path_owner_callback
+        can_use_tool = make_path_owner_callback(
+            cwd=env.cwd,
+            owns_paths=owns_paths,
+            excludes_paths=excludes_paths or [],
+        )
+
     # Revision loop: round 0 is the initial run. If review=True and the
     # Reviewer rejects, we re-run the specialist with their feedback as
     # extra context. Up to `max_revisions` re-runs after the initial round.
@@ -528,13 +592,16 @@ async def dispatch(
         spec=specialist,
         system_prompt=system_prompt,
         user_prompt=user_prompt_for_round,
-        cwd=wt.worktree_path,
+        cwd=env.cwd,
         limits=limits,
         events_log=mp.events,
         on_message=collect,
+        can_use_tool=can_use_tool,
     )
 
-    if review:
+    # Reviewer is git-only (it diffs base_sha..HEAD). Skip for workspace.
+    if review and project.kind == "repo":
+        assert env.base_sha is not None  # repo kind always sets base_sha
         rev_round = 0
         while True:
             rev_round += 1
@@ -543,8 +610,8 @@ async def dispatch(
                 break
             try:
                 rev, rev_cost = await reviewer.run_reviewer(
-                    worktree_path=wt.worktree_path,
-                    base_sha=wt.base_sha,
+                    worktree_path=env.cwd,
+                    base_sha=env.base_sha,
                     ticket=ticket,
                     contract=contract,
                     prior_reviews=[
@@ -590,22 +657,29 @@ async def dispatch(
             user_prompt_for_round = compose_user_prompt(
                 ticket,
                 extra_context=extra_for_revision,
-                working_directory=str(wt.worktree_path),
+                working_directory=str(env.cwd),
+                kind=project.kind,
             )
             run = await runner.run_specialist(
                 spec=specialist,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt_for_round,
-                cwd=wt.worktree_path,
+                cwd=env.cwd,
                 limits=limits,
                 events_log=mp.events,  # appends; consider per-round files later
                 on_message=collect,
+                can_use_tool=can_use_tool,
             )
 
     # Scan commits for trailer violations (regardless of run status).
-    try:
-        commits = scan_commits(wt.worktree_path, wt.base_sha)
-    except subprocess.CalledProcessError:
+    # Workspace missions don't produce commits — skip the scan.
+    if project.kind == "repo":
+        assert env.base_sha is not None
+        try:
+            commits = scan_commits(env.cwd, env.base_sha)
+        except subprocess.CalledProcessError:
+            commits = []
+    else:
         commits = []
     has_violations = any(c.trailer_violations for c in commits)
 
@@ -615,7 +689,7 @@ async def dispatch(
     session_id = run.final.session_id if run.final and run.final.session_id else None
     if run.status is RunStatus.COMPLETED and session_id:
         delta, delta_cost = await extract_memory_delta(
-            spec=specialist, session_id=session_id, cwd=wt.worktree_path
+            spec=specialist, session_id=session_id, cwd=env.cwd
         )
 
     # Write transcript and result.md.
@@ -661,9 +735,9 @@ async def dispatch(
         specialist=specialist.name,
         model=specialist.model,
         ticket=ticket,
-        branch=wt.branch,
-        worktree_path=str(wt.worktree_path),
-        base_sha=wt.base_sha,
+        branch=env.branch,
+        worktree_path=str(env.cwd),
+        base_sha=env.base_sha,
         started_at=started_iso,
         ended_at=_now_iso(),
         duration_seconds=run.duration_seconds,

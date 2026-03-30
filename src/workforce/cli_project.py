@@ -1,10 +1,13 @@
-"""CLI commands for projects: add, assign, unassign, list, show, forget."""
+"""CLI commands for projects: add, assign, unassign, list, show, forget, tail."""
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
+from typing import Literal
 
 import typer
 from rich.panel import Panel
@@ -38,17 +41,54 @@ def _roster_store() -> RosterStore:
 @sub.command("add")
 def add(
     path: Path = typer.Argument(
-        ..., help="Path to a git repository.", exists=True, file_okay=False
+        ..., help="Path to a git repository or a plain working directory.",
+        exists=True, file_okay=False,
     ),
     name: str | None = typer.Option(
-        None, "--name", help="Display name (default: repo basename)."
+        None, "--name", help="Display name (default: directory basename)."
+    ),
+    workspace: bool = typer.Option(
+        False, "--workspace",
+        help=(
+            "Force workspace kind even if `<path>/.git` exists. Missions run in "
+            "the directory directly with no worktree, no commits, and no "
+            "auto-merge."
+        ),
+    ),
+    repo: bool = typer.Option(
+        False, "--repo",
+        help=(
+            "Force repo kind. Fails if `<path>/.git` is missing. The default "
+            "auto-detects from `.git` presence — pass this when you want to "
+            "make the choice explicit in scripts."
+        ),
     ),
 ) -> None:
-    """Register a git repository as a Workforce project."""
-    repo_path = path.resolve()
+    """Register a directory as a Workforce project.
 
-    if not project.is_git_repo(repo_path):
-        output.die(f"{repo_path} is not a git repository (no .git found)")
+    By default the kind is inferred from the directory: `.git` present → repo
+    (worktrees, commits, the works); otherwise → workspace (plain working
+    directory, file outputs only). Pass `--workspace` or `--repo` to override.
+    """
+    if workspace and repo:
+        output.die("--workspace and --repo are mutually exclusive")
+
+    repo_path = path.resolve()
+    has_git = project.is_git_repo(repo_path)
+
+    if repo and not has_git:
+        output.die(
+            f"{repo_path} is not a git repository (no .git found). "
+            "Initialize it first or drop the --repo flag to register it as a "
+            "workspace."
+        )
+
+    if workspace:
+        kind: Literal["repo", "workspace"] = "workspace"
+    elif repo:
+        kind = "repo"
+    else:
+        kind = "repo" if has_git else "workspace"
 
     try:
         project_id = project.resolve_project_id(repo_path)
@@ -63,26 +103,28 @@ def add(
             id=project_id,
             name=display_name,
             repo_path=str(repo_path),
+            kind=kind,
         )
         store.save(proj)
     except (project.ProjectError, ValueError) as e:
         output.die(str(e))
 
     # Write the marker file so future operations resolve to the same id even
-    # if the repo is moved. Best-effort — if the repo is read-only we warn.
+    # if the directory is moved. Best-effort — if it's read-only we warn.
     try:
         project.write_marker(repo_path, project_id)
     except OSError as e:
         output.warn(
-            f"could not write {project.MARKER_FILENAME} marker in repo: {e}. "
-            "If you move the repo, the project id will change."
+            f"could not write {project.MARKER_FILENAME} marker: {e}. "
+            "If you move the directory, the project id will change."
         )
 
+    label = "workspace" if kind == "workspace" else "project"
     output.success(
-        f"registered project {proj.name!r} (id {proj.id}) at {repo_path}"
+        f"registered {label} {proj.name!r} (id {proj.id}) at {repo_path}"
     )
 
-    if not has_commits(repo_path):
+    if kind == "repo" and not has_commits(repo_path):
         output.warn(
             "this repo has no commits yet. Workforce can't dispatch missions "
             "until there's at least one commit. Run "
@@ -186,15 +228,18 @@ def show(project_ref: str = typer.Argument(..., help="Project name or id.", meta
     meta.add_column()
     meta.add_row("name", proj.name)
     meta.add_row("id", proj.id)
-    meta.add_row("repo path", proj.repo_path)
+    meta.add_row("kind", proj.kind)
+    path_label = "workspace path" if proj.kind == "workspace" else "repo path"
+    meta.add_row(path_label, proj.repo_path)
     meta.add_row(
         "assigned specialists",
         ", ".join(proj.assigned_specialists) if proj.assigned_specialists else "(none)",
     )
     meta.add_row("default model", proj.default_model or "(roster default)")
 
-    repo_exists = Path(proj.repo_path).is_dir()
-    meta.add_row("repo present", "yes" if repo_exists else "[red]MISSING[/red]")
+    dir_exists = Path(proj.repo_path).is_dir()
+    presence_label = "workspace present" if proj.kind == "workspace" else "repo present"
+    meta.add_row(presence_label, "yes" if dir_exists else "[red]MISSING[/red]")
 
     # Walk missions for counts + total cost across both single and parent metas.
     import json as _json
@@ -251,7 +296,10 @@ def nuke(
 
     repo = Path(proj.repo_path)
     if not repo.is_dir():
-        output.die(f"project {proj.name!r} repo path missing: {repo}")
+        label = "workspace" if proj.kind == "workspace" else "repo"
+        output.die(f"project {proj.name!r} {label} path missing: {repo}")
+
+    is_workspace = proj.kind == "workspace"
 
     # What we'd delete
     worktrees_dir = WorktreeManager().project_worktrees_dir(proj.id)
@@ -259,14 +307,15 @@ def nuke(
     memory_dir = pstore.memory_dir(proj.id)
 
     branches: list[str] = []
-    try:
-        branches = find_workforce_branches(repo)
-    except subprocess.CalledProcessError as e:
-        output.warn(f"could not list branches: {e}")
+    if not is_workspace:
+        try:
+            branches = find_workforce_branches(repo)
+        except subprocess.CalledProcessError as e:
+            output.warn(f"could not list branches: {e}")
 
     worktrees = (
         sorted(p.name for p in worktrees_dir.iterdir() if p.is_dir())
-        if worktrees_dir.is_dir() else []
+        if (not is_workspace and worktrees_dir.is_dir()) else []
     )
     missions = (
         sorted(p.name for p in missions_dir.iterdir() if p.is_dir())
@@ -278,9 +327,11 @@ def nuke(
     )
 
     output.info(f"[bold]project nuke[/bold]: {proj.name} (id {proj.id})")
-    output.info(f"  repo:      {repo}")
-    output.info(f"  branches:  {len(branches)} workforce/*")
-    output.info(f"  worktrees: {len(worktrees)}")
+    path_label = "workspace" if is_workspace else "repo"
+    output.info(f"  {path_label}:      {repo}")
+    if not is_workspace:
+        output.info(f"  branches:  {len(branches)} workforce/*")
+        output.info(f"  worktrees: {len(worktrees)}")
     output.info(f"  missions:  {len(missions)}")
     if also_memory:
         output.info(f"  memory:    {len(memory_files)} file(s) [bold red](will be wiped)[/bold red]")
@@ -304,35 +355,36 @@ def nuke(
             output.info("aborted")
             raise typer.Exit()
 
-    # 1. Drop worktree directories. Do this BEFORE branch deletion so git
-    #    isn't holding the branches via the worktrees.
-    if worktrees_dir.is_dir():
-        shutil.rmtree(worktrees_dir, ignore_errors=True)
-        output.success(f"removed {len(worktrees)} worktree dir(s)")
+    if not is_workspace:
+        # 1. Drop worktree directories. Do this BEFORE branch deletion so git
+        #    isn't holding the branches via the worktrees.
+        if worktrees_dir.is_dir():
+            shutil.rmtree(worktrees_dir, ignore_errors=True)
+            output.success(f"removed {len(worktrees)} worktree dir(s)")
 
-    # 2. Tell git to forget the worktree registrations.
-    try:
-        subprocess.run(
-            ["git", "worktree", "prune"],
-            cwd=repo, capture_output=True, text=True, check=False,
-        )
-    except OSError as e:
-        output.warn(f"git worktree prune failed: {e}")
+        # 2. Tell git to forget the worktree registrations.
+        try:
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=repo, capture_output=True, text=True, check=False,
+            )
+        except OSError as e:
+            output.warn(f"git worktree prune failed: {e}")
 
-    # 3. Force-delete the branches.
-    deleted = 0
-    for branch in branches:
-        r = subprocess.run(
-            ["git", "branch", "-D", branch],
-            cwd=repo, capture_output=True, text=True, check=False,
-        )
-        if r.returncode == 0:
-            deleted += 1
-        else:
-            err = (r.stderr.strip() or r.stdout.strip())[:200]
-            output.warn(f"could not delete {branch}: {err}")
-    if deleted:
-        output.success(f"deleted {deleted} branch(es)")
+        # 3. Force-delete the branches.
+        deleted = 0
+        for branch in branches:
+            r = subprocess.run(
+                ["git", "branch", "-D", branch],
+                cwd=repo, capture_output=True, text=True, check=False,
+            )
+            if r.returncode == 0:
+                deleted += 1
+            else:
+                err = (r.stderr.strip() or r.stdout.strip())[:200]
+                output.warn(f"could not delete {branch}: {err}")
+        if deleted:
+            output.success(f"deleted {deleted} branch(es)")
 
     # 4. Wipe missions.
     if missions_dir.is_dir():
@@ -376,3 +428,105 @@ def forget(
 
     pstore.delete(proj.id)
     output.success(f"forgot project {proj.name}")
+
+
+# ----- tail (multi-mission live stream) -------------------------------------
+
+
+@sub.command("tail")
+def project_tail(
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    show_thinking: bool = typer.Option(
+        False, "--show-thinking", help="Include thinking blocks in the stream."
+    ),
+    poll_seconds: float = typer.Option(
+        0.5, "--poll", help="How often to check for new events / new missions.",
+    ),
+) -> None:
+    """Stream events from ALL missions in a project, interleaved with labels.
+
+    Run this once per project (the Manager session opens it for you in a
+    separate window). New missions are picked up automatically as their
+    directories appear; events are tagged `[short-id/specialist]` so you can
+    tell who's saying what when several workers run in parallel.
+    """
+    paths.ensure_layout()
+    pstore = _project_store()
+    try:
+        proj = pstore.resolve(project_ref)
+    except project.ProjectError as e:
+        output.die(str(e))
+
+    missions_dir = pstore.missions_dir(proj.id)
+    output.info(
+        f"[bold]tailing project {proj.name}[/bold] — all missions "
+        f"[dim]({missions_dir})[/dim]"
+    )
+    output.rule()
+
+    # Avoid the cli_mission import at module load time (would create a cycle
+    # via the typer app registration). Import here.
+    from workforce.cli_mission import render_labeled_event
+
+    # Per-mission read positions and labels.
+    positions: dict[str, int] = {}
+    labels: dict[str, str] = {}
+
+    def label_for(mid: str) -> str:
+        short = mid[-8:] if len(mid) > 8 else mid
+        meta_path = missions_dir / mid / "meta.json"
+        if meta_path.is_file():
+            try:
+                data = json.loads(meta_path.read_text())
+                spec = data.get("specialist") or "?"
+                return f"{short}/{spec}"
+            except (OSError, ValueError):
+                pass
+        return f"{short}/…"
+
+    try:
+        while True:
+            # Discover new missions; refresh labels for ones whose meta.json
+            # appeared after we attached.
+            if missions_dir.is_dir():
+                for d in sorted(missions_dir.iterdir()):
+                    if not d.is_dir():
+                        continue
+                    mid = d.name
+                    if mid not in positions:
+                        positions[mid] = 0
+                        labels[mid] = label_for(mid)
+                        output.info(
+                            f"[bold cyan]+ attached: {labels[mid]}[/bold cyan]"
+                        )
+                    elif labels[mid].endswith("/…"):
+                        new_label = label_for(mid)
+                        if not new_label.endswith("/…"):
+                            labels[mid] = new_label
+
+            # Read new events from each attached mission.
+            for mid in list(positions.keys()):
+                events_path = missions_dir / mid / "events.jsonl"
+                if not events_path.is_file():
+                    continue
+                try:
+                    with events_path.open() as f:
+                        f.seek(positions[mid])
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                evt = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            render_labeled_event(
+                                labels[mid], evt, show_thinking=show_thinking
+                            )
+                        positions[mid] = f.tell()
+                except FileNotFoundError:
+                    pass
+
+            time.sleep(poll_seconds)
+    except KeyboardInterrupt:
+        output.info("[dim](stopped)[/dim]")

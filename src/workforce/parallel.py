@@ -484,6 +484,8 @@ async def dispatch_parallel(
             sm is not None
             and rt is not None
             and sm.status is MissionStatus.COMPLETED
+            and sm.worktree_path is not None
+            and sm.base_sha is not None
         ):
             try:
                 ref.out_of_lane_files = manager.audit_ownership(
@@ -587,7 +589,11 @@ async def _run_sub_missions(
     by_task_id = {r.task.id: r for r in resolved}
     waves = _topological_waves([r.task for r in resolved])
 
-    # Track which tasks completed cleanly and what branch they're on.
+    # Track which tasks completed cleanly. For repo missions we also remember
+    # the branch tip so dependent waves can fork from it; workspace missions
+    # don't have branches (all sub-missions share the workspace cwd) so the
+    # branch map stays empty.
+    completed_tasks: set[str] = set()
     completed_branches: dict[str, str] = {}
     all_metas: list[MissionMeta] = []
 
@@ -613,6 +619,8 @@ async def _run_sub_missions(
             review=review,
             max_revisions=max_revisions,
             contract=contract_text,
+            owns_paths=r.task.owns_paths,
+            excludes_paths=r.task.excludes_paths,
         )
 
     for wave in waves:
@@ -622,7 +630,7 @@ async def _run_sub_missions(
 
         for r in wave_resolved:
             real_deps = [d for d in r.task.depends_on if d != CONTRACT_TASK_ID]
-            failed_deps = [d for d in real_deps if d not in completed_branches]
+            failed_deps = [d for d in real_deps if d not in completed_tasks]
             if failed_deps:
                 skips.append(_skipped_meta(
                     project=project,
@@ -633,11 +641,13 @@ async def _run_sub_missions(
                 ))
                 continue
 
-            if not real_deps:
-                start_point = None  # use source's HEAD
+            # Workspace projects don't fork branches; all sub-missions run in
+            # the project dir directly. Repo projects fork from each dep's
+            # branch tip and merge any siblings in before starting.
+            if not real_deps or project.kind == "workspace":
+                start_point = None  # use source's HEAD (or workspace cwd)
                 additional_merges: list[str] = []
             else:
-                # Fork from first dep's branch tip; merge any others in.
                 primary = real_deps[0]
                 start_point = completed_branches[primary]
                 additional_merges = [completed_branches[d] for d in real_deps[1:]]
@@ -657,9 +667,11 @@ async def _run_sub_missions(
             for meta in wave_metas:
                 all_metas.append(meta)
                 if meta.status is MissionStatus.COMPLETED:
-                    # Find the task id for this meta to record its branch.
                     task_id = meta.mission_id.rsplit("__", 1)[-1]
-                    completed_branches[task_id] = meta.branch
+                    completed_tasks.add(task_id)
+                    if meta.branch is not None:
+                        # Repo missions only — workspace missions have no branch.
+                        completed_branches[task_id] = meta.branch
 
     return all_metas
 
@@ -852,7 +864,9 @@ def merge_plan(
         if ref is None:
             continue
         sub = by_id.get(ref.mission_id)
-        if sub is None:
+        if sub is None or sub.branch is None:
+            # Workspace sub-missions have no branch; merge plans don't apply.
+            # All edits already landed in the shared workspace dir.
             continue
         plan.append(
             MergeStep(

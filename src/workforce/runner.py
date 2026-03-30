@@ -12,7 +12,7 @@ import asyncio
 import dataclasses
 import json
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -78,12 +78,17 @@ async def run_specialist(
     limits: RunLimits | None = None,
     events_log: Path | None = None,
     on_message: EventCallback | None = None,
+    can_use_tool: Any = None,
 ) -> RunResult:
     """Run one mission to completion (or limit) and return the result.
 
     Streams every SDK message both to `events_log` (JSONL, one record per line,
     flushed immediately) and to `on_message(msg)` if provided. The two channels
     are independent: the log is for replay, the callback is for live UI.
+
+    `can_use_tool` is an optional async callback the SDK calls before each tool
+    use; mission orchestrators use it to enforce path-ownership lanes for
+    parallel sub-missions. See `workforce.permissions`.
     """
     limits = limits or RunLimits()
     options = ClaudeAgentOptions(
@@ -93,7 +98,11 @@ async def run_specialist(
         model=spec.model,
         max_turns=limits.max_turns,
         max_budget_usd=limits.max_budget_usd,
-        permission_mode="bypassPermissions",
+        # `can_use_tool` requires permission_mode="default" per the SDK contract;
+        # bypass mode short-circuits the callback. With a callback set we also
+        # don't want auto-bypass, since the callback IS the authority.
+        permission_mode="default" if can_use_tool is not None else "bypassPermissions",
+        can_use_tool=can_use_tool,
     )
 
     started = time.monotonic()
@@ -112,8 +121,18 @@ async def run_specialist(
 
     options.stderr = _stderr if stderr_fh is not None else None
 
+    # The SDK's `can_use_tool` callback requires the streaming-input protocol:
+    # the prompt must be an AsyncIterable of message dicts, not a bare string.
+    # When no callback is set we keep the simpler string-prompt path so the
+    # rest of the test suite and existing call sites are unaffected.
+    prompt: str | AsyncIterable[dict[str, Any]]
+    if can_use_tool is not None:
+        prompt = _single_message_stream(user_prompt)
+    else:
+        prompt = user_prompt
+
     async def consume() -> None:
-        async for msg in query(prompt=user_prompt, options=options):
+        async for msg in query(prompt=prompt, options=options):
             if log_fh is not None:
                 log_fh.write(json.dumps(message_to_jsonable(msg), default=str) + "\n")
                 log_fh.flush()
@@ -162,6 +181,21 @@ async def run_specialist(
         detail = "; ".join(final.errors) if final.errors else "is_error=True"
         return _make_result(state, started, RunStatus.ERROR, detail)
     return _make_result(state, started, RunStatus.COMPLETED, None)
+
+
+async def _single_message_stream(text: str) -> AsyncIterator[dict[str, Any]]:
+    """Wrap a single user prompt as the streaming-protocol message dict.
+
+    Matches the format the SDK uses internally when handed a string prompt
+    (see claude_agent_sdk._internal.client lines ~209-215). One message in,
+    then the iterable closes — equivalent to a one-shot turn.
+    """
+    yield {
+        "type": "user",
+        "session_id": "",
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+    }
 
 
 @dataclass

@@ -427,21 +427,22 @@ def _topological_sort(tasks: list[Task]) -> list[str]:
 
 def _check_parallel_overlap(decomp: Decomposition, repo_path: Path | None) -> None:
     """For tasks that could run concurrently (no mutual dependency), confirm
-    their owned-path globs don't share any concrete files in `repo_path`.
+    their owned-path lanes don't overlap.
 
-    This is filesystem-grounded: tasks that create entirely new files won't
-    register as overlap (the files don't exist yet). Documented limitation;
-    the common case (refactoring existing files) IS caught.
+    Two checks compose:
+    1. **Pattern overlap** — do the glob patterns themselves share any
+       theoretical path? Catches "tasks A and B both claim ``outputs/*.json``"
+       even in an empty workspace dir where no files exist yet.
+    2. **File-set overlap** — when a real `repo_path` is given, also intersect
+       the resolved file sets. Catches concrete cases the user can act on
+       (here are the specific files both tasks would touch).
+
+    Pattern overlap covers the soundness-critical cases (especially in
+    workspace dirs that start sparse); file-set overlap gives the user a
+    sharper error message when files exist.
     """
-    if repo_path is None:
-        return  # caller didn't ask for path checks
-
-    # Build "concrete file set" for each task's owns - excludes patterns.
-    sets = {t.id: _resolve_paths(repo_path, t.owns_paths, t.excludes_paths) for t in decomp.tasks}
-
-    # Two tasks can run in parallel iff neither (transitively) depends on the
-    # other. Build reachability for non-contract dependencies.
     by_id = {t.id: t for t in decomp.tasks}
+
     def reaches(start: str, target: str) -> bool:
         if start == target:
             return False
@@ -457,12 +458,37 @@ def _check_parallel_overlap(decomp: Decomposition, repo_path: Path | None) -> No
             stack.extend(d for d in by_id[cur].depends_on if d != CONTRACT_TASK_ID)
         return False
 
+    # Pre-resolve each task's owns/excludes to concrete file sets when we have
+    # a repo path. Empty when repo_path is None.
+    file_sets: dict[str, set[Path]] = (
+        {t.id: _resolve_paths(repo_path, t.owns_paths, t.excludes_paths) for t in decomp.tasks}
+        if repo_path is not None else
+        {t.id: set() for t in decomp.tasks}
+    )
+
     ids = list(by_id.keys())
     for i, a in enumerate(ids):
+        ta = by_id[a]
+        if not ta.owns_paths:
+            continue  # nothing declared → no claim to compare against
         for b in ids[i + 1 :]:
             if reaches(a, b) or reaches(b, a):
                 continue  # not concurrent — order constrained by deps
-            shared = sets[a] & sets[b]
+            tb = by_id[b]
+            if not tb.owns_paths:
+                continue
+
+            # Pattern overlap (sound regardless of filesystem state).
+            overlapping = _pattern_overlap_pair(ta, tb)
+            if overlapping:
+                raise ValidationError(
+                    f"parallel tasks {a!r} and {b!r} have overlapping path lanes: "
+                    f"{overlapping[0]!r} (from {a}) and {overlapping[1]!r} (from {b}) "
+                    "can both match the same path. Tighten one or split the work."
+                )
+
+            # File-set overlap (sharper error, only when a repo path is given).
+            shared = file_sets[a] & file_sets[b]
             if shared:
                 preview = ", ".join(sorted(str(p) for p in list(shared)[:3]))
                 more = "..." if len(shared) > 3 else ""
@@ -470,6 +496,61 @@ def _check_parallel_overlap(decomp: Decomposition, repo_path: Path | None) -> No
                     f"parallel tasks {a!r} and {b!r} both claim files: "
                     f"{preview}{more}"
                 )
+
+
+def _pattern_overlap_pair(a: Task, b: Task) -> tuple[str, str] | None:
+    """Find any (owns_a, owns_b) pair whose glob patterns can match a common
+    path that isn't carved out by either side's excludes_paths.
+
+    Returns the overlapping pattern pair for the error message, or None.
+    """
+    from workforce.globmatch import globs_overlap
+
+    for pa in a.owns_paths:
+        for pb in b.owns_paths:
+            if not globs_overlap(pa, pb):
+                continue
+            # Patterns share at least one path. If either side carves the
+            # OTHER task's claim out via its own excludes, the lanes are still
+            # disjoint in practice. We only suppress overlap when the carve-out
+            # is structurally clear (exact match or **-superset) so we don't
+            # silently miss real conflicts.
+            if _exclude_covers(pb, a.excludes_paths):
+                continue
+            if _exclude_covers(pa, b.excludes_paths):
+                continue
+            return (pa, pb)
+    return None
+
+
+def _exclude_covers(owns_pattern: str, excludes: list[str]) -> bool:
+    """True if every path matching `owns_pattern` is shadowed by some pattern
+    in `excludes`. Conservative — only catches the obvious cases:
+
+    - exact equality (``excludes`` contains ``owns_pattern`` literally), or
+    - a ``**``-suffixed pattern in ``excludes`` whose prefix is a prefix of
+      ``owns_pattern`` (e.g. ``owns="app/legacy/v1.py"`` is covered by
+      ``excludes="app/legacy/**"``), or
+    - a ``**/``-prefixed pattern in ``excludes`` whose suffix matches
+      ``owns_pattern`` exactly or as a path tail.
+
+    Anything more clever risks false negatives (declaring "covered" when it
+    isn't and silently dropping a real overlap). Erring conservative means
+    the user might see a false-positive overlap warning if they construct an
+    unusually-shaped excludes — they can rephrase to a clearer form.
+    """
+    for ex in excludes:
+        if ex == owns_pattern:
+            return True
+        if ex.endswith("/**"):
+            prefix = ex[:-3]
+            if owns_pattern == prefix or owns_pattern.startswith(prefix + "/"):
+                return True
+        if ex.startswith("**/"):
+            suffix = ex[3:]
+            if owns_pattern == suffix or owns_pattern.endswith("/" + suffix):
+                return True
+    return False
 
 
 def _resolve_paths(repo: Path, owns: list[str], excludes: list[str]) -> set[Path]:

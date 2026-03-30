@@ -510,3 +510,258 @@ def test_dispatch_skips_memory_call_when_no_session(
                 )
             )
     assert delta_called is False
+
+
+# ----- workspace kind --------------------------------------------------------
+
+
+@pytest.fixture
+def workspace_dir(tmp_path: Path) -> Path:
+    """A plain (non-git) directory for workspace-kind project tests."""
+    d = tmp_path / "workspace"
+    d.mkdir()
+    return d
+
+
+@pytest.fixture
+def workspace_project(
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+    workspace_dir: Path,
+    specialist: Specialist,
+) -> Project:
+    _, ps, _ = stores
+    proj = Project(
+        id="def456abc789",
+        name="myws",
+        repo_path=str(workspace_dir),
+        kind="workspace",
+        assigned_specialists=[specialist.name],
+    )
+    ps.save(proj)
+    return proj
+
+
+def test_compose_user_prompt_workspace_uses_workspace_criteria() -> None:
+    p = compose_user_prompt(
+        "do a thing",
+        working_directory="/tmp/ws",
+        kind="workspace",
+    )
+    assert "Save your work to files" in p
+    assert "All work committed to this branch" not in p
+    assert "persistent state" in p
+
+
+def test_compose_user_prompt_repo_uses_repo_criteria() -> None:
+    p = compose_user_prompt(
+        "do a thing",
+        working_directory="/tmp/r",
+        kind="repo",
+    )
+    assert "All work committed to this branch" in p
+    assert "Save your work to files" not in p
+
+
+class _ExplodingWorktreeManager:
+    """Test double — fails the test if anyone calls .create()."""
+
+    def create(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("worktree_manager.create called for workspace mission")
+
+
+def test_dispatch_workspace_happy_path(
+    workspace_project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+    workspace_dir: Path,
+) -> None:
+    rs, ps, _ = stores
+    msgs = [_assistant("wrote listings.md"), _result(cost=0.15, session="sess-W")]
+
+    captured: dict[str, Any] = {}
+    base_fake = _mock_runner(msgs)
+
+    async def spy_runner(**kwargs: Any) -> RunResult:
+        captured["cwd"] = kwargs.get("cwd")
+        captured["user_prompt"] = kwargs.get("user_prompt")
+        return await base_fake(**kwargs)
+
+    async def runit() -> MissionMeta:
+        return await dispatch(
+            project=workspace_project,
+            specialist=specialist,
+            ticket="list 5 senior python roles",
+            roster_store=rs,
+            project_store=ps,
+            worktree_manager=_ExplodingWorktreeManager(),  # type: ignore[arg-type]
+            mission_id="m-test-ws01",
+        )
+
+    with patch.object(runner_mod, "run_specialist", spy_runner):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            meta = asyncio.run(runit())
+
+    assert meta.status is MissionStatus.COMPLETED
+    assert meta.branch is None
+    assert meta.base_sha is None
+    assert meta.worktree_path == str(workspace_dir)
+    assert meta.commits == []
+
+    # Specialist ran in the workspace itself, not a worktree.
+    assert captured["cwd"] == workspace_dir
+    # The user prompt got the workspace success criteria.
+    assert "Save your work to files" in captured["user_prompt"]
+
+    # meta.json round-trips through pydantic with branch=null.
+    mp = mission.mission_paths(workspace_project.id, "m-test-ws01")
+    saved = json.loads(mp.meta.read_text())
+    assert saved["branch"] is None
+    assert saved["base_sha"] is None
+    # Re-validate to confirm Optional fields load cleanly.
+    MissionMeta.model_validate(saved)
+
+
+def test_dispatch_workspace_skips_reviewer(
+    workspace_project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """Even if review=True is passed directly, workspace missions skip the Reviewer.
+
+    The CLI rejects --review for workspace projects; this is the belt-and-braces
+    guard inside dispatch() for any direct caller.
+    """
+    rs, ps, _ = stores
+    msgs = [_assistant("done"), _result(cost=0.05, session="sess-W")]
+
+    async def reviewer_explodes(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("reviewer.run_reviewer must not be called for workspace")
+
+    from workforce import reviewer as reviewer_mod
+
+    with patch.object(runner_mod, "run_specialist", _mock_runner(msgs)):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            with patch.object(reviewer_mod, "run_reviewer", reviewer_explodes):
+                meta = asyncio.run(
+                    dispatch(
+                        project=workspace_project,
+                        specialist=specialist,
+                        ticket="t",
+                        roster_store=rs,
+                        project_store=ps,
+                        worktree_manager=_ExplodingWorktreeManager(),  # type: ignore[arg-type]
+                        mission_id="m-test-ws02",
+                        review=True,
+                    )
+                )
+
+    assert meta.status is MissionStatus.COMPLETED
+    assert meta.reviews == []
+
+
+def test_dispatch_workspace_rejects_start_point(
+    workspace_project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """start_point and additional_merges are git-only — refuse loudly for workspace."""
+    rs, ps, _ = stores
+
+    async def runit() -> MissionMeta:
+        return await dispatch(
+            project=workspace_project,
+            specialist=specialist,
+            ticket="t",
+            roster_store=rs,
+            project_store=ps,
+            worktree_manager=_ExplodingWorktreeManager(),  # type: ignore[arg-type]
+            mission_id="m-test-ws03",
+            start_point="some-branch",
+        )
+
+    with pytest.raises(ValueError, match="workspace"):
+        asyncio.run(runit())
+
+
+# ----- ownership callback wiring ---------------------------------------------
+
+
+def test_dispatch_passes_owns_paths_callback_to_runner(
+    project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """When dispatch() is given owns_paths, it builds a callback and forwards it
+    to runner.run_specialist as `can_use_tool`."""
+    rs, ps, wm = stores
+    msgs = [_assistant("done"), _result(cost=0.05, session="sess")]
+
+    captured: dict[str, Any] = {}
+    base_fake = _mock_runner(msgs)
+
+    async def spy(**kwargs: Any) -> RunResult:
+        captured["can_use_tool"] = kwargs.get("can_use_tool")
+        return await base_fake(**kwargs)
+
+    with patch.object(runner_mod, "run_specialist", spy):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            asyncio.run(
+                dispatch(
+                    project=project,
+                    specialist=specialist,
+                    ticket="t",
+                    roster_store=rs,
+                    project_store=ps,
+                    worktree_manager=wm,
+                    mission_id="m-test-own1",
+                    owns_paths=["app/api/**"],
+                    excludes_paths=["app/api/legacy/**"],
+                )
+            )
+
+    cb = captured["can_use_tool"]
+    assert cb is not None, "callback was not forwarded"
+    # Smoke-test the callback: a path under app/api should be allowed; outside it, denied.
+    from claude_agent_sdk import (
+        PermissionResultAllow,
+        PermissionResultDeny,
+        ToolPermissionContext,
+    )
+    ctx = ToolPermissionContext(signal=None, suggestions=[], tool_use_id="t1")
+    in_lane = asyncio.run(cb("Write", {"file_path": "app/api/handler.py"}, ctx))
+    out = asyncio.run(cb("Write", {"file_path": "tests/test_x.py"}, ctx))
+    assert isinstance(in_lane, PermissionResultAllow)
+    assert isinstance(out, PermissionResultDeny)
+
+
+def test_dispatch_no_owns_paths_means_no_callback(
+    project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """Single-specialist dispatch (no Manager-declared lane) → no enforcement."""
+    rs, ps, wm = stores
+    msgs = [_assistant("done"), _result(cost=0.05, session="sess")]
+
+    captured: dict[str, Any] = {}
+    base_fake = _mock_runner(msgs)
+
+    async def spy(**kwargs: Any) -> RunResult:
+        captured["can_use_tool"] = kwargs.get("can_use_tool")
+        return await base_fake(**kwargs)
+
+    with patch.object(runner_mod, "run_specialist", spy):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            asyncio.run(
+                dispatch(
+                    project=project,
+                    specialist=specialist,
+                    ticket="t",
+                    roster_store=rs,
+                    project_store=ps,
+                    worktree_manager=wm,
+                    mission_id="m-test-own2",
+                )
+            )
+
+    assert captured["can_use_tool"] is None

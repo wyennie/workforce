@@ -20,7 +20,7 @@ import re
 import shutil
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -88,14 +88,23 @@ def is_git_repo(repo_path: Path) -> bool:
 
 
 class Project(BaseModel):
-    """A registered git repo with assigned specialists."""
+    """A registered project with assigned specialists.
+
+    Two kinds:
+    - `repo` (default): a git work tree. Missions run in per-mission worktrees
+      with commit-cadence rules and post-mission commit scanning.
+    - `workspace`: a plain working directory. Missions run there directly with
+      no worktree, no commit scanning, and no auto-merge — for recurring
+      non-engineering tasks where outputs are files, not commits.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = SCHEMA_VERSION
     id: str
     name: str
-    repo_path: str  # absolute path; stored as str for clean TOML round-trip
+    repo_path: str  # absolute path; for workspace kind, this is the working dir
+    kind: Literal["repo", "workspace"] = "repo"
     assigned_specialists: list[str] = Field(default_factory=list)
     default_model: str | None = None
 
