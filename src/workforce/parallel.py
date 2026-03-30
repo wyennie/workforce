@@ -339,6 +339,8 @@ async def dispatch_parallel(
     parent_mission_id: str | None = None,
     decomposition_override: Decomposition | None = None,
     auto_staff: bool = True,
+    review: bool = False,
+    max_revisions: int = 3,
 ) -> ParallelDispatchResult:
     """Plan with the Manager, validate, optionally confirm, then fan out.
 
@@ -468,6 +470,8 @@ async def dispatch_parallel(
         contract_text=contract_text,
         limits=sub_mission_limits,
         make_sub_callback=make_sub_callback,
+        review=review,
+        max_revisions=max_revisions,
     )
 
     # ---- 7. Final parent meta ----
@@ -575,6 +579,8 @@ async def _run_sub_missions(
     contract_text: str | None,
     limits: RunLimits | None,
     make_sub_callback: "SubCallbackFactory | None",
+    review: bool = False,
+    max_revisions: int = 3,
 ) -> list[MissionMeta]:
     """Run sub-missions wave-by-wave, honoring depends_on for sequential cases."""
     extra_context = (
@@ -607,6 +613,9 @@ async def _run_sub_missions(
             extra_context=extra_context,
             start_point=start_point,
             additional_merges=additional_merges or None,
+            review=review,
+            max_revisions=max_revisions,
+            contract=contract_text,
         )
 
     for wave in waves:

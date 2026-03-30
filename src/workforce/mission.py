@@ -30,8 +30,9 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-from workforce import paths, runner
+from workforce import paths, reviewer, runner
 from workforce.project import Project, ProjectStore
+from workforce.reviewer import Review, ReviewError
 from workforce.runner import EventCallback, RunLimits, RunResult, RunStatus
 from workforce.specialist import RosterStore, Specialist, SpecialistStats
 from workforce.worktree import WorktreeManager, WorktreeRef
@@ -47,6 +48,8 @@ class MissionStatus(str, Enum):
     INTERRUPTED = "interrupted"
     # Mission ran fine but produced commits with forbidden Claude trailers.
     TRAILER_VIOLATION = "trailer_violation"
+    # Reviewer kept rejecting; revision loop hit its cap without approval.
+    REVIEW_REJECTED = "review_rejected"
 
 
 # ----- Models ----------------------------------------------------------------
@@ -64,6 +67,16 @@ class CommitInfo(BaseModel):
     subject: str
     body: str = ""
     trailer_violations: list[str] = Field(default_factory=list)
+
+
+class ReviewRecord(BaseModel):
+    """One Reviewer round recorded on a MissionMeta."""
+    model_config = ConfigDict(extra="forbid")
+    round: int
+    approved: bool
+    summary: str = ""
+    issues: list[str] = Field(default_factory=list)
+    cost_usd: float = 0.0
 
 
 class MissionMeta(BaseModel):
@@ -88,9 +101,12 @@ class MissionMeta(BaseModel):
     error_detail: str | None = None
     cost_usd: float = 0.0
     manager_cost_usd: float = 0.0  # planning cost when Manager picked this specialist
+    review_cost_usd: float = 0.0   # total cost across all Reviewer rounds
     turn_count: int = 0
     commits: list[CommitInfo] = Field(default_factory=list)
     memory_delta_captured: bool = False
+    reviews: list[ReviewRecord] = Field(default_factory=list)
+    revision_rounds: int = 0  # how many times the specialist re-ran in response to the Reviewer
 
 
 # ----- Mission ID -----------------------------------------------------------
@@ -148,14 +164,33 @@ def compose_system_prompt(
     return "\n\n".join(parts) + "\n"
 
 
-def compose_user_prompt(ticket: str, *, extra_context: str | None = None) -> str:
-    """User prompt = ticket + (optional extra context block) + success criteria.
+def compose_user_prompt(
+    ticket: str,
+    *,
+    extra_context: str | None = None,
+    working_directory: str | None = None,
+) -> str:
+    """User prompt = (cwd hint) + ticket + (extra context) + success criteria.
+
+    `working_directory` should be the absolute path of the worktree. We name
+    it explicitly because Claude has stale defaults (e.g. `/root/repo/...`)
+    that waste 1-2 turns at the start of every mission while the model
+    discovers its actual cwd via `pwd`.
 
     `extra_context` is for orchestration-level material the specialist should
-    treat as authoritative (e.g. an API contract from the parallel Manager).
-    Wrapped in an XML tag so the model treats it as inline data, not prose.
+    treat as authoritative (e.g. an API contract from the parallel Manager
+    or reviewer feedback from a previous round). Wrapped in an XML tag so
+    the model treats it as inline data, not prose.
     """
-    parts = [f"## Ticket\n\n{ticket.strip()}"]
+    parts: list[str] = []
+    if working_directory:
+        parts.append(
+            f"## Working directory\n\n"
+            f"You are operating in `{working_directory}`. ALL file paths in tool "
+            "calls should be either absolute under this directory or relative "
+            "to it. Do not assume `/root/repo` or any other default location."
+        )
+    parts.append(f"## Ticket\n\n{ticket.strip()}")
     if extra_context and extra_context.strip():
         parts.append(
             "<extra_context>\n"
@@ -394,6 +429,9 @@ async def dispatch(
     manager_cost_usd: float = 0.0,
     start_point: str | None = None,
     additional_merges: list[str] | None = None,
+    review: bool = False,
+    max_revisions: int = 3,
+    contract: str | None = None,
 ) -> MissionMeta:
     """Run one mission end-to-end. See module docstring."""
     limits = limits or RunLimits()
@@ -403,7 +441,7 @@ async def dispatch(
     mp.ticket.write_text(ticket.rstrip() + "\n")
     started_iso = _now_iso()
 
-    # Compose prompts.
+    # Compose system prompt (no cwd needed yet — it's per-worktree).
     cross_project_memory = roster_store.load_memory(specialist.name)
     project_memory_path = project_store.memory_dir(project.id) / f"{specialist.name}.md"
     project_memory = project_memory_path.read_text() if project_memory_path.is_file() else ""
@@ -412,12 +450,19 @@ async def dispatch(
         cross_project_memory=cross_project_memory,
         project_memory=project_memory,
     )
-    user_prompt = compose_user_prompt(ticket, extra_context=extra_context)
 
     # Create worktree, optionally forking from another task's branch.
     repo_path = Path(project.repo_path)
     wt = worktree_manager.create(
         repo_path, project.id, mission_id, start_point=start_point
+    )
+
+    # User prompt now that we know the worktree's path — name it explicitly so
+    # the model doesn't waste turns rediscovering its cwd.
+    user_prompt = compose_user_prompt(
+        ticket,
+        extra_context=extra_context,
+        working_directory=str(wt.worktree_path),
     )
 
     # Merge any additional dependency branches into the worktree before the
@@ -473,15 +518,91 @@ async def dispatch(
         if on_message is not None:
             on_message(msg)
 
+    # Revision loop: round 0 is the initial run. If review=True and the
+    # Reviewer rejects, we re-run the specialist with their feedback as
+    # extra context. Up to `max_revisions` re-runs after the initial round.
+    review_records: list[ReviewRecord] = []
+    review_cost_total = 0.0
+    revision_rounds_used = 0
+    user_prompt_for_round = user_prompt
+
     run = await runner.run_specialist(
         spec=specialist,
         system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        user_prompt=user_prompt_for_round,
         cwd=wt.worktree_path,
         limits=limits,
         events_log=mp.events,
         on_message=collect,
     )
+
+    if review:
+        rev_round = 0
+        while True:
+            rev_round += 1
+            if run.status is not RunStatus.COMPLETED:
+                # Worker errored or timed out — no point reviewing.
+                break
+            try:
+                rev, rev_cost = await reviewer.run_reviewer(
+                    worktree_path=wt.worktree_path,
+                    base_sha=wt.base_sha,
+                    ticket=ticket,
+                    contract=contract,
+                    prior_reviews=[
+                        Review(
+                            approved=r.approved, summary=r.summary, issues=r.issues,
+                        ) for r in review_records
+                    ],
+                )
+            except ReviewError as e:
+                # Reviewer itself failed (parse error, timeout). Don't fail
+                # the mission — record the issue and exit the loop with what
+                # the worker produced.
+                review_records.append(ReviewRecord(
+                    round=rev_round, approved=False,
+                    summary=f"reviewer error: {e}", issues=[],
+                ))
+                break
+            review_cost_total += rev_cost
+            review_records.append(ReviewRecord(
+                round=rev_round,
+                approved=rev.approved,
+                summary=rev.summary,
+                issues=rev.issues,
+                cost_usd=rev_cost,
+            ))
+            if rev.approved:
+                break
+            if revision_rounds_used >= max_revisions:
+                break  # exhausted the loop without approval
+
+            # Re-run the specialist with the Reviewer's feedback.
+            revision_rounds_used += 1
+            issues_block = (
+                "\n".join(f"- {i}" for i in rev.issues) if rev.issues else "(none listed)"
+            )
+            extra_for_revision = (
+                (extra_context or "")
+                + f"\n\n## Reviewer feedback (round {rev_round})\n\n"
+                + f"summary: {rev.summary}\n\n"
+                + f"issues:\n{issues_block}\n\n"
+                + "Address these issues, commit your changes, and finish."
+            )
+            user_prompt_for_round = compose_user_prompt(
+                ticket,
+                extra_context=extra_for_revision,
+                working_directory=str(wt.worktree_path),
+            )
+            run = await runner.run_specialist(
+                spec=specialist,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt_for_round,
+                cwd=wt.worktree_path,
+                limits=limits,
+                events_log=mp.events,  # appends; consider per-round files later
+                on_message=collect,
+            )
 
     # Scan commits for trailer violations (regardless of run status).
     try:
@@ -525,6 +646,16 @@ async def dispatch(
             f"forbidden Claude trailer in commits: {', '.join(bad)}. "
             "Edit the commit messages and re-run if needed."
         )
+    # If the Reviewer was active and never approved, override the status.
+    # We treat "loop exhausted without approval" as REVIEW_REJECTED.
+    if review and review_records and not review_records[-1].approved:
+        final_status = MissionStatus.REVIEW_REJECTED
+        last = review_records[-1]
+        error_detail = (
+            f"reviewer rejected after {len(review_records)} round(s). "
+            f"Final summary: {last.summary}"
+        )
+
     meta = MissionMeta(
         mission_id=mission_id,
         project_id=project.id,
@@ -540,11 +671,14 @@ async def dispatch(
         duration_seconds=run.duration_seconds,
         status=final_status,
         error_detail=error_detail,
-        cost_usd=run.cost_usd + delta_cost + manager_cost_usd,
+        cost_usd=run.cost_usd + delta_cost + manager_cost_usd + review_cost_total,
         manager_cost_usd=manager_cost_usd,
+        review_cost_usd=review_cost_total,
         turn_count=run.turn_count,
         commits=commits,
         memory_delta_captured=delta is not None,
+        reviews=review_records,
+        revision_rounds=revision_rounds_used,
     )
     mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
 

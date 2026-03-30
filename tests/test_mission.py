@@ -187,6 +187,20 @@ def test_compose_user_prompt_has_ticket_and_criteria() -> None:
     assert "Success criteria" in out
 
 
+def test_compose_user_prompt_includes_working_directory() -> None:
+    out = compose_user_prompt(
+        "x", working_directory="/home/will/.workforce/projects/abc/worktrees/m-1",
+    )
+    assert "Working directory" in out
+    assert "/home/will/.workforce/projects/abc/worktrees/m-1" in out
+    assert "/root/repo" in out  # mentioned in the warning
+
+
+def test_compose_user_prompt_omits_cwd_section_when_none() -> None:
+    out = compose_user_prompt("x")
+    assert "Working directory" not in out
+
+
 # ----- memory delta parsing --------------------------------------------------
 
 

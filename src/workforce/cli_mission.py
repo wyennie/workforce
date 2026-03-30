@@ -190,6 +190,14 @@ def dispatch_command(
         False, "--panels",
         help="Show per-worker live panels instead of the default interleaved output (parallel mode only).",
     ),
+    review: bool = typer.Option(
+        False, "--review",
+        help="After each sub-mission, run the Reviewer. On rejection, the specialist re-runs with the Reviewer's feedback (up to --max-revisions rounds).",
+    ),
+    max_revisions: int = typer.Option(
+        3, "--max-revisions",
+        help="Hard cap on Reviewer rejection loops per sub-mission. Only applies with --review.",
+    ),
 ) -> None:
     """Dispatch a mission. The Manager plans it, then it runs.
 
@@ -245,6 +253,7 @@ def dispatch_command(
             roster_store, project_store, worktree_manager, limits,
             auto_merge=auto_merge or merge_into is not None,
             merge_into=merge_into,
+            review=review, max_revisions=max_revisions,
         )
         return
 
@@ -255,6 +264,7 @@ def dispatch_command(
         auto_merge=auto_merge or merge_into is not None,
         merge_into=merge_into,
         panels=panels,
+        review=review, max_revisions=max_revisions,
     )
 
 
@@ -269,6 +279,8 @@ def _dispatch_direct(
     *,
     auto_merge: bool = False,
     merge_into: str | None = None,
+    review: bool = False,
+    max_revisions: int = 3,
 ) -> None:
     """Single specialist, no Manager. The --specialist X bypass."""
     output.info(
@@ -283,6 +295,7 @@ def _dispatch_direct(
                 roster_store=roster_store, project_store=project_store,
                 worktree_manager=worktree_manager, limits=limits,
                 on_message=_make_renderer(),
+                review=review, max_revisions=max_revisions,
             )
         )
     except KeyboardInterrupt:
@@ -314,6 +327,8 @@ def _dispatch_with_manager(
     auto_merge: bool = False,
     merge_into: str | None = None,
     panels: bool = False,
+    review: bool = False,
+    max_revisions: int = 3,
 ) -> None:
     """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
@@ -357,6 +372,7 @@ def _dispatch_with_manager(
             roster_store, project_store, worktree_manager,
             limits=limits, auto_staff=auto_staff,
             auto_merge=auto_merge, merge_into=merge_into,
+            review=review, max_revisions=max_revisions,
         )
     else:
         _dispatch_after_manager_parallel(
@@ -365,6 +381,7 @@ def _dispatch_with_manager(
             limits=limits, skip_confirm=skip_confirm, auto_staff=auto_staff,
             auto_merge=auto_merge, merge_into=merge_into,
             panels=panels,
+            review=review, max_revisions=max_revisions,
         )
 
 
@@ -381,6 +398,8 @@ def _dispatch_after_manager_single(
     auto_staff: bool,
     auto_merge: bool = False,
     merge_into: str | None = None,
+    review: bool = False,
+    max_revisions: int = 3,
 ) -> None:
     """Manager said single. Use its specialist suggestion, dispatch one mission."""
     if not decomp.tasks:
@@ -429,6 +448,7 @@ def _dispatch_after_manager_single(
                 on_message=_make_renderer(),
                 mission_id=mission_id,
                 manager_cost_usd=manager_cost,
+                review=review, max_revisions=max_revisions,
             )
         )
     except KeyboardInterrupt:
@@ -459,6 +479,8 @@ def _dispatch_after_manager_parallel(
     auto_merge: bool = False,
     merge_into: str | None = None,
     panels: bool = False,
+    review: bool = False,
+    max_revisions: int = 3,
 ) -> None:
     """Manager said parallel/sequential. Hand off to the parallel orchestrator."""
     confirm_cb: parallel.ConfirmCallback | None
@@ -485,6 +507,8 @@ def _dispatch_after_manager_parallel(
                         confirm=confirm_cb,
                         auto_staff=auto_staff,
                         decomposition_override=decomp,
+                        review=review,
+                        max_revisions=max_revisions,
                     )
                 )
         else:
@@ -500,6 +524,8 @@ def _dispatch_after_manager_parallel(
                     confirm=confirm_cb,
                     auto_staff=auto_staff,
                     decomposition_override=decomp,
+                    review=review,
+                    max_revisions=max_revisions,
                 )
             )
     except KeyboardInterrupt:
@@ -787,6 +813,7 @@ def _print_summary(meta: mission.MissionMeta) -> None:
         MissionStatus.WALL_TIMEOUT: "[yellow]wall_timeout[/yellow]",
         MissionStatus.INTERRUPTED: "[yellow]interrupted[/yellow]",
         MissionStatus.TRAILER_VIOLATION: "[red]trailer_violation[/red]",
+        MissionStatus.REVIEW_REJECTED: "[red]review_rejected[/red]",
     }
     output.info(f"mission {meta.mission_id}: {style[meta.status]}")
     output.info(f"  branch:    {meta.branch}")
@@ -799,6 +826,18 @@ def _print_summary(meta: mission.MissionMeta) -> None:
         output.warn(
             "  only one commit — check if the specialist is committing as it goes"
         )
+    if meta.reviews:
+        approved = meta.reviews[-1].approved
+        verdict = "approved" if approved else "rejected"
+        verdict_color = "green" if approved else "red"
+        output.info(
+            f"  review:    [{verdict_color}]{verdict}[/{verdict_color}] "
+            f"after {len(meta.reviews)} round(s), revisions={meta.revision_rounds}, "
+            f"review_cost=${meta.review_cost_usd:.4f}"
+        )
+        if not approved and meta.reviews[-1].issues:
+            for issue in meta.reviews[-1].issues[:5]:
+                output.warn(f"    • {issue}")
     if meta.error_detail:
         output.fail(f"  detail:    {meta.error_detail}")
     if meta.memory_delta_captured:
@@ -871,6 +910,7 @@ _STATUS_STYLES = {
     MissionStatus.WALL_TIMEOUT: "[yellow]wall_timeout[/yellow]",
     MissionStatus.INTERRUPTED: "[yellow]interrupted[/yellow]",
     MissionStatus.TRAILER_VIOLATION: "[red]trailer_violation[/red]",
+    MissionStatus.REVIEW_REJECTED: "[red]review_rejected[/red]",
 }
 
 
