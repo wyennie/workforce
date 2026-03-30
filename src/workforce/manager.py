@@ -232,7 +232,13 @@ class SpecialistInfo:
     project_missions: int  # past completed missions on THIS project
 
 
-def _user_prompt(ticket: str, project_specialists: list[SpecialistInfo]) -> str:
+def _user_prompt(
+    ticket: str,
+    project_specialists: list[SpecialistInfo],
+    *,
+    prior_decomposition: Decomposition | None = None,
+    user_feedback: str | None = None,
+) -> str:
     if project_specialists:
         lines = []
         for s in project_specialists:
@@ -241,23 +247,35 @@ def _user_prompt(ticket: str, project_specialists: list[SpecialistInfo]) -> str:
         listing = "\n".join(lines)
     else:
         listing = "(none assigned to this project yet)"
-    return f"""\
-## Ticket
 
-{ticket.strip()}
+    parts = [
+        f"## Ticket\n\n{ticket.strip()}",
+        f"## Specialists currently assigned to this project\n\n{listing}",
+        (
+            "Prefer these names — they have project memory and know the codebase.\n"
+            "For any task that needs a specialty none of them cover, suggest a new\n"
+            "short name and set `template_hint` to one of: `backend`, `frontend`,\n"
+            "`tester`, `reviewer`, `generalist`. Workforce will auto-hire from the\n"
+            "template before dispatching."
+        ),
+    ]
 
-## Specialists currently assigned to this project
+    if prior_decomposition is not None and user_feedback:
+        parts.append(
+            "## Replanning request\n\n"
+            "You produced this decomposition earlier:\n\n"
+            "```json\n"
+            + prior_decomposition.model_dump_json(indent=2)
+            + "\n```\n\n"
+            "The user reviewed it and asked for changes:\n\n"
+            "> " + user_feedback.strip().replace("\n", "\n> ") + "\n\n"
+            "Produce a REVISED decomposition addressing this feedback. "
+            "Keep what worked; change what they pointed at. Same output schema."
+        )
+    else:
+        parts.append("Now look at the repo and produce the decomposition JSON.")
 
-{listing}
-
-Prefer these names — they have project memory and know the codebase.
-For any task that needs a specialty none of them cover, suggest a new
-short name and set `template_hint` to one of: `backend`, `frontend`,
-`tester`, `reviewer`, `generalist`. Workforce will auto-hire from the
-template before dispatching.
-
-Now look at the repo and produce the decomposition JSON.
-"""
+    return "\n\n".join(parts)
 
 
 # ----- Parsing --------------------------------------------------------------
@@ -523,6 +541,8 @@ async def run_manager(
     ticket: str,
     repo_path: Path,
     project_specialists: list[SpecialistInfo],
+    prior_decomposition: Decomposition | None = None,
+    user_feedback: str | None = None,
     model: str = DEFAULT_MANAGER_MODEL,
     max_turns: int = 25,
     max_budget_usd: float = 1.0,
@@ -549,7 +569,11 @@ async def run_manager(
     async def consume() -> None:
         nonlocal cost
         async for msg in query(
-            prompt=_user_prompt(ticket, project_specialists),
+            prompt=_user_prompt(
+                ticket, project_specialists,
+                prior_decomposition=prior_decomposition,
+                user_feedback=user_feedback,
+            ),
             options=options,
         ):
             collected.append(msg)

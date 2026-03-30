@@ -14,7 +14,7 @@ import asyncio
 import datetime as dt
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -692,6 +692,7 @@ class AutoMergeStepResult:
     branch: str
     success: bool
     detail: str   # "merged" / "conflict" / "skipped" / "aborted" / "error: ..."
+    conflicting_files: list[str] = field(default_factory=list)
 
 
 class MergePreflightError(Exception):
@@ -805,6 +806,23 @@ def auto_merge(repo_path: Path, plan: list[MergeStep]) -> list[AutoMergeStepResu
                 success=True, detail="merged",
             ))
         else:
+            # Capture conflicting files BEFORE aborting (the abort wipes them
+            # from the working tree). `--diff-filter=U` lists unmerged paths.
+            conflicting: list[str] = []
+            try:
+                conflict_out = subprocess.run(
+                    ["git", "diff", "--name-only", "--diff-filter=U"],
+                    cwd=repo_path, capture_output=True, text=True, check=False,
+                )
+                if conflict_out.returncode == 0:
+                    conflicting = [
+                        line.strip()
+                        for line in conflict_out.stdout.splitlines()
+                        if line.strip()
+                    ]
+            except OSError:
+                pass
+
             # Best-effort abort so the source repo isn't left mid-merge
             subprocess.run(
                 ["git", "merge", "--abort"],
@@ -814,6 +832,7 @@ def auto_merge(repo_path: Path, plan: list[MergeStep]) -> list[AutoMergeStepResu
             results.append(AutoMergeStepResult(
                 task_id=step.task_id, branch=step.branch,
                 success=False, detail=f"conflict or merge error: {err}",
+                conflicting_files=conflicting,
             ))
             aborted = True
     return results

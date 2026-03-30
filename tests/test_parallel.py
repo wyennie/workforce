@@ -569,6 +569,8 @@ def test_auto_merge_aborts_on_conflict_and_skips_rest(repo: Path) -> None:
     assert results[0].success
     assert not results[1].success
     assert "conflict" in results[1].detail.lower() or "merge error" in results[1].detail.lower()
+    # Conflicting files should be captured BEFORE the abort wipes them.
+    assert "shared.txt" in results[1].conflicting_files
     assert not results[2].success
     assert "skipped" in results[2].detail.lower()
     # Repo should not be in the middle of an unresolved merge

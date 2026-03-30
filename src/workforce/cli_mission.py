@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -486,12 +487,74 @@ def _dispatch_after_manager_parallel(
     review: bool = False,
     max_revisions: int = 3,
 ) -> None:
-    """Manager said parallel/sequential. Hand off to the parallel orchestrator."""
-    confirm_cb: parallel.ConfirmCallback | None
-    if skip_confirm:
-        confirm_cb = lambda _d, _r: True  # noqa: E731
-    else:
-        confirm_cb = _confirm_decomposition
+    """Manager said parallel/sequential. Confirm-loop here, then orchestrate."""
+    parent_mission_id = mission.generate_mission_id()
+
+    # Confirm loop: validate → resolve for display → ask y/N/d → maybe replan → repeat.
+    while True:
+        try:
+            manager.validate_decomposition(
+                decomp,
+                repo_path=Path(proj.repo_path),
+                available_specialists=list(proj.assigned_specialists) or None,
+            )
+        except ValidationError as e:
+            output.die(f"Manager produced an invalid decomposition: {e}")
+
+        try:
+            resolved = parallel.resolve_task_specialists(
+                decomp,
+                parent_mission_id=parent_mission_id,
+                project=proj,
+                roster_store=roster_store,
+                project_store=project_store,
+                auto_staff=auto_staff,
+            )
+        except ResolutionError as e:
+            output.die(str(e))
+
+        if skip_confirm:
+            break
+
+        rows = [(r.task.id, r.specialist.name, r.staffing_action) for r in resolved]
+        decision = _confirm_decomposition(decomp, rows)
+        if decision.action == "cancel":
+            output.info("aborted")
+            return
+        if decision.action == "proceed":
+            break
+        # discuss: re-run Manager with the user's feedback as context.
+        output.info("[dim]Manager replanning with your feedback...[/dim]")
+        specs_info = parallel._build_specialist_info(proj, roster_store, project_store)
+        try:
+            decomp, replan_cost, _ = asyncio.run(manager.run_manager(
+                ticket=ticket,
+                repo_path=Path(proj.repo_path),
+                project_specialists=specs_info,
+                prior_decomposition=decomp,
+                user_feedback=decision.feedback,
+            ))
+        except ManagerError as e:
+            output.die(f"manager replan failed: {e}")
+        manager_cost += replan_cost
+        output.info(
+            f"[dim]manager: kind={decomp.kind.value} +cost=${replan_cost:.4f} "
+            f"(total: ${manager_cost:.4f}) — {decomp.rationale}[/dim]"
+        )
+        # If the Manager replanned to a single-task decomposition, switch
+        # to the single-task path; we shouldn't ask the user to confirm a
+        # one-row table.
+        if decomp.kind is DecompositionKind.SINGLE:
+            output.info("[dim](Manager dropped to single-task; dispatching as one mission)[/dim]")
+            _dispatch_after_manager_single(
+                proj, ticket, decomp, manager_cost,
+                roster_store, project_store, worktree_manager,
+                limits=limits, auto_staff=auto_staff,
+                auto_merge=auto_merge, merge_into=merge_into,
+                review=review, max_revisions=max_revisions,
+            )
+            return
+        # Loop back: validate + resolve + confirm the new plan.
 
     task_ids = [t.id for t in decomp.tasks]
     use_panels = panels and cli_panels.stdout_is_tty()
@@ -508,9 +571,10 @@ def _dispatch_after_manager_parallel(
                         worktree_manager=worktree_manager,
                         sub_mission_limits=limits,
                         make_sub_callback=panel_display.make_callback,
-                        confirm=confirm_cb,
+                        confirm=None,  # already confirmed in the loop above
                         auto_staff=auto_staff,
                         decomposition_override=decomp,
+                        parent_mission_id=parent_mission_id,
                         review=review,
                         max_revisions=max_revisions,
                     )
@@ -525,9 +589,10 @@ def _dispatch_after_manager_parallel(
                     worktree_manager=worktree_manager,
                     sub_mission_limits=limits,
                     make_sub_callback=_make_sub_renderer,
-                    confirm=confirm_cb,
+                    confirm=None,
                     auto_staff=auto_staff,
                     decomposition_override=decomp,
+                    parent_mission_id=parent_mission_id,
                     review=review,
                     max_revisions=max_revisions,
                 )
@@ -562,13 +627,22 @@ _STAFFING_LABELS = {
 }
 
 
+# What the confirm callback returns. "discuss" means the user wants to
+# replan; the .feedback string is what they typed.
+@dataclass
+class ConfirmDecision:
+    action: str  # "proceed" | "cancel" | "discuss"
+    feedback: str = ""
+
+
 def _confirm_decomposition(
     decomp: Decomposition,
     resolved: list[tuple[str, str, str]],
-) -> bool:
-    """Print the decomposition and ask for y/N confirmation.
+) -> ConfirmDecision:
+    """Print the decomposition and ask for y/N/d.
 
     `resolved` rows are (task_id, specialist_name, staffing_action).
+    Returns a ConfirmDecision telling the caller what to do next.
     """
     output.rule("decomposition")
     output.info(f"[bold]kind:[/bold] {decomp.kind.value}    [dim]{decomp.rationale}[/dim]")
@@ -619,7 +693,28 @@ def _confirm_decomposition(
     if decomp.merge_order:
         output.info(f"[dim]merge order: {' → '.join(decomp.merge_order)}[/dim]")
     output.rule()
-    return typer.confirm("Proceed with this decomposition?", default=True)
+
+    while True:
+        choice = typer.prompt(
+            "Proceed? [y]es / [n]o / [d]iscuss with Manager",
+            default="y",
+        ).strip().lower()
+        if choice in {"y", "yes"}:
+            return ConfirmDecision(action="proceed")
+        if choice in {"n", "no"}:
+            return ConfirmDecision(action="cancel")
+        if choice in {"d", "discuss"}:
+            output.info(
+                "[dim]Tell the Manager what to change "
+                "(e.g. \"split tester into unit + e2e\", \"don't use Tailwind\"). "
+                "Empty input cancels.[/dim]"
+            )
+            feedback = typer.prompt("> ", default="").strip()
+            if not feedback:
+                output.info("(no feedback given; staying on this decomposition)")
+                continue
+            return ConfirmDecision(action="discuss", feedback=feedback)
+        output.warn(f"unknown choice {choice!r}; pick y, n, or d")
 
 
 def _make_sub_renderer(task_id: str) -> Any:
@@ -768,8 +863,43 @@ def _execute_auto_merge(
             f"auto-merge incomplete: {len(succeeded)} merged, {len(failed)} not merged. "
             "Resolve manually."
         )
+        # Show a guided fix path for the first failure that had conflicting files.
+        # Subsequent failures are usually "skipped after earlier failure" — no
+        # need to repeat the same advice for them.
+        first_with_conflicts = next(
+            (r for r in failed if r.conflicting_files), None
+        )
+        if first_with_conflicts is not None:
+            _print_conflict_help(proj, first_with_conflicts)
     else:
         output.success(f"auto-merge: all {len(succeeded)} branch(es) merged")
+
+
+def _print_conflict_help(
+    proj: project_mod.Project,
+    failed: parallel.AutoMergeStepResult,
+) -> None:
+    """Tell the user exactly what to do with the conflicting files."""
+    output.rule("how to resolve")
+    output.info(
+        f"branch [bold]{failed.branch}[/bold] conflicts with the target on:"
+    )
+    for f in failed.conflicting_files[:10]:
+        output.info(f"  {f}")
+    if len(failed.conflicting_files) > 10:
+        output.info(f"  [dim](+{len(failed.conflicting_files) - 10} more)[/dim]")
+    output.info("")
+    output.info("To resolve, from your project repo:")
+    output.info(f"  [dim]cd {proj.repo_path}[/dim]")
+    output.info(f"  git merge --no-ff {failed.branch}")
+    output.info("    [dim]then for each conflicting file:[/dim]")
+    output.info("      [dim]# pick one of:[/dim]")
+    output.info("      git checkout --ours <file>     [dim]# keep target's version[/dim]")
+    output.info(f"      git checkout --theirs <file>   [dim]# keep {failed.branch}'s version[/dim]")
+    output.info("      $EDITOR <file>                 [dim]# merge by hand[/dim]")
+    output.info("    git add <file>")
+    output.info("  git commit --no-edit")
+    output.info("[dim]Or abort entirely: git merge --abort[/dim]")
 
 
 def _print_ownership_audit(parent: ParallelMissionMeta) -> None:
