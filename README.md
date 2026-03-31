@@ -114,7 +114,7 @@ With `--review`, after each sub-mission a Reviewer specialist (read-only) inspec
 
 ## Commit policy
 
-Specialists commit their own work as they go, in the worktree's branch. Conventional-commits style, authored as you (Workforce never overrides `user.name`/`user.email`). A per-specialist `Co-Authored-By: <name> <name>@workforce.local` trailer credits which specialist did the work; the generic `Co-Authored-By: Claude <noreply@anthropic.com>` trailer and `🤖 Generated with Claude Code` line are explicitly suppressed and the runner refuses to finish the mission if either leaks through.
+Specialists commit their own work as they go, in the worktree's branch. Conventional-commits style, authored as you (Workforce never overrides `user.name`/`user.email`). A per-specialist `Co-Authored-By: <name> <name>@workforce.local` trailer credits which specialist did the work.
 
 ## Develop
 
