@@ -338,6 +338,7 @@ async def dispatch_parallel(
     auto_staff: bool = True,
     review: bool = False,
     max_revisions: int = 3,
+    base_branch: str | None = None,
 ) -> ParallelDispatchResult:
     """Plan with the Manager, validate, optionally confirm, then fan out.
 
@@ -469,6 +470,7 @@ async def dispatch_parallel(
         make_sub_callback=make_sub_callback,
         review=review,
         max_revisions=max_revisions,
+        base_branch=base_branch,
     )
 
     # ---- 7. Final parent meta ----
@@ -580,6 +582,7 @@ async def _run_sub_missions(
     make_sub_callback: SubCallbackFactory | None,
     review: bool = False,
     max_revisions: int = 3,
+    base_branch: str | None = None,
 ) -> list[MissionMeta]:
     """Run sub-missions wave-by-wave, honoring depends_on for sequential cases."""
     extra_context = (
@@ -643,9 +646,10 @@ async def _run_sub_missions(
 
             # Workspace projects don't fork branches; all sub-missions run in
             # the project dir directly. Repo projects fork from each dep's
-            # branch tip and merge any siblings in before starting.
+            # branch tip and merge any siblings in before starting; root tasks
+            # fork from `base_branch` if set, else current HEAD.
             if not real_deps or project.kind == "workspace":
-                start_point = None  # use source's HEAD (or workspace cwd)
+                start_point = None if project.kind == "workspace" else base_branch
                 additional_merges: list[str] = []
             else:
                 primary = real_deps[0]

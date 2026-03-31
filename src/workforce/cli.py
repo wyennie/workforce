@@ -111,6 +111,16 @@ def manage_command(
             "to confirm before each tool call."
         ),
     ),
+    branch: str | None = typer.Option(
+        None,
+        "--branch",
+        metavar="BRANCH",
+        help=(
+            "Per-session staging branch. Every mission the Manager dispatches "
+            "forks from BRANCH and merges back into BRANCH; main is never "
+            "touched. BRANCH is created from current HEAD if it doesn't exist."
+        ),
+    ),
 ) -> None:
     """Open an interactive Manager chat session for a project.
 
@@ -127,5 +137,5 @@ def manage_command(
         proj = pstore.resolve(project_ref)
     except project_mod.ProjectError as e:
         output.die(str(e))
-    code = manage.manage_command_main(proj, rstore, yolo=yolo)
+    code = manage.manage_command_main(proj, rstore, yolo=yolo, branch=branch)
     raise typer.Exit(code=code)

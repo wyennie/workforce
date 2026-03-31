@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -52,7 +53,7 @@ Carry context across turns — remember what's been discussed and what's running
 - Kind: {kind}  ({kind_explanation})
 - Working directory: {repo_path}
 - Assigned specialists: {assigned}
-- State on disk: {workforce_dir}
+- State on disk: {workforce_dir}{branch_state}
 
 {roster_section}
 
@@ -64,7 +65,7 @@ Use the workforce CLI via Bash. **Always pass `--background`** — never \
 this project, labeled by mission id and specialist. New missions appear in \
 that window automatically as you dispatch them.
 
-    workforce dispatch {name} "<ticket text>" --specialist <name> --background
+    workforce dispatch {name} "<ticket text>" --specialist <name> --background{branch_dispatch_suffix}
 
 This returns immediately with a mission id and the worker runs detached. \
 You don't see the output here; the user watches it in the shared tail \
@@ -74,7 +75,7 @@ it's going or once you think a mission should be done, check status with \
 
 DO NOT use `--window` (would open a separate window per dispatch — the \
 user explicitly asked for a single shared window). DO NOT omit \
-`--background` (would block your conversation while the mission runs).
+`--background` (would block your conversation while the mission runs).{branch_dispatch_rule}
 
 # Other commands you know
 
@@ -117,7 +118,12 @@ _KIND_EXPLANATION = {
 }
 
 
-def _build_manager_prompt(project: Project, roster_store: RosterStore) -> str:
+def _build_manager_prompt(
+    project: Project,
+    roster_store: RosterStore,
+    *,
+    branch: str | None = None,
+) -> str:
     assigned = (
         ", ".join(project.assigned_specialists)
         if project.assigned_specialists else "(none yet — hire and assign one first)"
@@ -137,6 +143,26 @@ def _build_manager_prompt(project: Project, roster_store: RosterStore) -> str:
         "## Assigned specialists\n\n(none — ask the user to assign one before dispatching.)"
     )
 
+    if branch:
+        branch_state = (
+            f"\n- **Staging branch: `{branch}`** "
+            "— every dispatch must pass `--branch {branch}` so work forks "
+            "from and merges back into this branch (main stays untouched)."
+        ).format(branch=branch)
+        branch_dispatch_suffix = f" --branch {branch}"
+        branch_dispatch_rule = (
+            "\n\n# Staging branch\n\n"
+            f"This session is pinned to staging branch `{branch}`. **Every "
+            f"`workforce dispatch` you run MUST include `--branch {branch}`.** "
+            "That makes mission worktrees fork from the staging branch and "
+            "auto-merge back into it on success. Do not omit it; do not pass "
+            "a different branch."
+        )
+    else:
+        branch_state = ""
+        branch_dispatch_suffix = ""
+        branch_dispatch_rule = ""
+
     return _MANAGER_PROMPT_TEMPLATE.format(
         name=project.name,
         project_id=project.id,
@@ -146,6 +172,9 @@ def _build_manager_prompt(project: Project, roster_store: RosterStore) -> str:
         assigned=assigned,
         workforce_dir=str(paths.project_dir(project.id)),
         roster_section=roster_section,
+        branch_state=branch_state,
+        branch_dispatch_suffix=branch_dispatch_suffix,
+        branch_dispatch_rule=branch_dispatch_rule,
     )
 
 
@@ -248,9 +277,10 @@ async def run_manager_chat(
     roster_store: RosterStore,
     *,
     yolo: bool = False,
+    branch: str | None = None,
 ) -> int:
     """Open the chat session. Returns exit code (0 on clean exit)."""
-    system_prompt = _build_manager_prompt(project, roster_store)
+    system_prompt = _build_manager_prompt(project, roster_store, branch=branch)
 
     options = ClaudeAgentOptions(
         cwd=str(project.repo_path),
@@ -340,10 +370,33 @@ async def run_manager_chat(
     return 0
 
 
-def manage_command_main(project: Project, roster_store: RosterStore, *, yolo: bool) -> int:
+def manage_command_main(
+    project: Project,
+    roster_store: RosterStore,
+    *,
+    yolo: bool,
+    branch: str | None = None,
+) -> int:
     """Entry point used by the CLI; wraps the async session in asyncio.run."""
+    if branch is not None:
+        if project.kind == "workspace":
+            output.fail(
+                "--branch is only meaningful for repo-kind projects "
+                "(workspaces have no branches)."
+            )
+            return 1
+        from workforce.worktree import WorktreeError, ensure_branch
+        try:
+            ensure_branch(Path(project.repo_path), branch)
+        except WorktreeError as e:
+            output.fail(str(e))
+            return 1
+        output.info(
+            f"[dim]session pinned to staging branch [bold]{branch}[/bold] — "
+            "every dispatch will fork from and merge back into it.[/dim]"
+        )
     try:
-        return asyncio.run(run_manager_chat(project, roster_store, yolo=yolo))
+        return asyncio.run(run_manager_chat(project, roster_store, yolo=yolo, branch=branch))
     except KeyboardInterrupt:
         return 130
 

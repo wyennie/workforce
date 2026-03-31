@@ -70,6 +70,38 @@ def is_repo_clean(repo_path: Path) -> tuple[bool, list[str]]:
     return (not dirty, dirty)
 
 
+def ensure_branch(repo_path: Path, name: str) -> None:
+    """Make sure `name` exists as a local branch, creating it from current HEAD if not.
+
+    No-op if it already exists. Used by `--branch` so the user doesn't have to
+    pre-create the staging branch. The branch is created at the repo's current
+    HEAD; we do not sync from main or any other ref.
+
+    Raises `WorktreeError` on failure (e.g. the repo has no commits, or git
+    refuses the name).
+    """
+    if not has_commits(repo_path):
+        raise UnbornRepoError(
+            f"{repo_path} has no commits yet — can't create a branch from nothing. "
+            "Make at least one commit first."
+        )
+    exists = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{name}"],
+        cwd=repo_path, capture_output=True, text=True,
+    ).returncode == 0
+    if exists:
+        return
+    r = subprocess.run(
+        ["git", "branch", name],
+        cwd=repo_path, capture_output=True, text=True, check=False,
+    )
+    if r.returncode != 0:
+        raise WorktreeError(
+            f"could not create branch {name!r} in {repo_path}: "
+            + (r.stderr.strip() or r.stdout.strip())
+        )
+
+
 def find_workforce_branches(repo_path: Path, *, merged_into: str | None = None) -> list[str]:
     """List `workforce/*` branches in `repo_path`.
 

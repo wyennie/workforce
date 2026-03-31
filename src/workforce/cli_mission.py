@@ -58,6 +58,7 @@ from workforce.specialist import RosterStore
 from workforce.worktree import (
     WorktreeError,
     WorktreeManager,
+    ensure_branch,
     find_workforce_branches,
     has_commits,
     is_repo_clean,
@@ -183,6 +184,18 @@ def dispatch_command(
         metavar="BRANCH",
         help="After successful completion, switch to BRANCH and merge there. Implies --auto-merge with an explicit target.",
     ),
+    branch: str | None = typer.Option(
+        None,
+        "--branch",
+        metavar="BRANCH",
+        help=(
+            "Staging branch for this dispatch. Mission worktrees fork from "
+            "BRANCH (created from current HEAD if missing), and on success the "
+            "work is auto-merged back into BRANCH. main is never touched. "
+            "Implies --auto-merge --merge-into BRANCH; mutually exclusive with "
+            "--merge-into."
+        ),
+    ),
     max_turns: int = typer.Option(50, "--max-turns", help="Hard cap on assistant turns per sub-mission."),
     max_cost: float = typer.Option(5.0, "--max-cost", help="Hard cap on cost (USD) per sub-mission."),
     max_wall: float = typer.Option(
@@ -235,6 +248,8 @@ def dispatch_command(
     """
     if window and background:
         output.die("--window and --background are mutually exclusive")
+    if branch is not None and merge_into is not None:
+        output.die("--branch and --merge-into are mutually exclusive (--branch sets the merge target)")
     if window or background:
         _dispatch_detached(
             project_ref=project_ref, ticket=ticket, specialist=specialist,
@@ -242,6 +257,7 @@ def dispatch_command(
             max_turns=max_turns, max_cost=max_cost, max_wall=max_wall,
             review=review, max_revisions=max_revisions,
             open_window=window,
+            branch=branch,
         )
         return
 
@@ -279,16 +295,27 @@ def dispatch_command(
     # Workspace projects don't support the git-flavored flags. Reject them
     # loudly here so the user doesn't discover the limitation mid-mission.
     if proj.kind == "workspace":
-        if auto_merge or merge_into is not None:
+        if auto_merge or merge_into is not None or branch is not None:
             output.die(
-                "--auto-merge / --merge-into don't apply to workspace projects "
-                "(no branches to merge)."
+                "--auto-merge / --merge-into / --branch don't apply to workspace "
+                "projects (no branches to merge)."
             )
         if review:
             output.die(
                 "workspace projects don't support --review yet (the Reviewer is "
                 "git-only, it diffs the worktree against base_sha)."
             )
+
+    # --branch BRANCH: ensure BRANCH exists (create from HEAD if missing), then
+    # behave as if --merge-into BRANCH was passed. Worktrees will fork from
+    # BRANCH's tip rather than current HEAD.
+    if branch is not None:
+        try:
+            ensure_branch(repo_path, branch)
+        except WorktreeError as e:
+            output.die(str(e))
+        merge_into = branch
+        auto_merge = True
 
     limits = RunLimits(
         max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall
@@ -310,6 +337,7 @@ def dispatch_command(
             merge_into=merge_into,
             review=review, max_revisions=max_revisions,
             mission_id=mission_id_override,
+            base_branch=branch,
         )
         return
 
@@ -325,6 +353,7 @@ def dispatch_command(
         merge_into=merge_into,
         panels=panels,
         review=review, max_revisions=max_revisions,
+        base_branch=branch,
     )
 
 
@@ -342,6 +371,7 @@ def _dispatch_direct(
     review: bool = False,
     max_revisions: int = 3,
     mission_id: str | None = None,
+    base_branch: str | None = None,
 ) -> None:
     """Single specialist, no Manager. The --specialist X bypass."""
     output.info(
@@ -358,6 +388,7 @@ def _dispatch_direct(
                 on_message=_make_renderer(),
                 review=review, max_revisions=max_revisions,
                 mission_id=mission_id,
+                start_point=base_branch,
             )
         )
     except KeyboardInterrupt:
@@ -385,6 +416,7 @@ def _dispatch_detached(
     review: bool,
     max_revisions: int,
     open_window: bool,
+    branch: str | None = None,
 ) -> None:
     """`--window` / `--background` shared path.
 
@@ -418,6 +450,8 @@ def _dispatch_detached(
     ]
     if review:
         argv += ["--review", "--max-revisions", str(max_revisions)]
+    if branch is not None:
+        argv += ["--branch", branch]
 
     # Detach so the child survives this process exiting. stdout/stderr go to
     # /dev/null — the tail window renders from events.jsonl, not stdout.
@@ -467,6 +501,7 @@ def _dispatch_with_manager(
     panels: bool = False,
     review: bool = False,
     max_revisions: int = 3,
+    base_branch: str | None = None,
 ) -> None:
     """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
@@ -511,6 +546,7 @@ def _dispatch_with_manager(
             limits=limits, auto_staff=auto_staff,
             auto_merge=auto_merge, merge_into=merge_into,
             review=review, max_revisions=max_revisions,
+            base_branch=base_branch,
         )
     else:
         _dispatch_after_manager_parallel(
@@ -520,6 +556,7 @@ def _dispatch_with_manager(
             auto_merge=auto_merge, merge_into=merge_into,
             panels=panels,
             review=review, max_revisions=max_revisions,
+            base_branch=base_branch,
         )
 
 
@@ -538,6 +575,7 @@ def _dispatch_after_manager_single(
     merge_into: str | None = None,
     review: bool = False,
     max_revisions: int = 3,
+    base_branch: str | None = None,
 ) -> None:
     """Manager said single. Use its specialist suggestion, dispatch one mission."""
     if not decomp.tasks:
@@ -587,6 +625,7 @@ def _dispatch_after_manager_single(
                 mission_id=mission_id,
                 manager_cost_usd=manager_cost,
                 review=review, max_revisions=max_revisions,
+                start_point=base_branch,
             )
         )
     except KeyboardInterrupt:
@@ -619,6 +658,7 @@ def _dispatch_after_manager_parallel(
     panels: bool = False,
     review: bool = False,
     max_revisions: int = 3,
+    base_branch: str | None = None,
 ) -> None:
     """Manager said parallel/sequential. Confirm-loop here, then orchestrate."""
     parent_mission_id = mission.generate_mission_id()
@@ -685,6 +725,7 @@ def _dispatch_after_manager_parallel(
                 limits=limits, auto_staff=auto_staff,
                 auto_merge=auto_merge, merge_into=merge_into,
                 review=review, max_revisions=max_revisions,
+                base_branch=base_branch,
             )
             return
         # Loop back: validate + resolve + confirm the new plan.
@@ -710,6 +751,7 @@ def _dispatch_after_manager_parallel(
                         parent_mission_id=parent_mission_id,
                         review=review,
                         max_revisions=max_revisions,
+                        base_branch=base_branch,
                     )
                 )
         else:
@@ -728,6 +770,7 @@ def _dispatch_after_manager_parallel(
                     parent_mission_id=parent_mission_id,
                     review=review,
                     max_revisions=max_revisions,
+                    base_branch=base_branch,
                 )
             )
     except KeyboardInterrupt:
