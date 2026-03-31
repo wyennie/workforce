@@ -584,7 +584,8 @@ def test_dispatch_workspace_happy_path(
     async def spy_runner(**kwargs: Any) -> RunResult:
         captured["cwd"] = kwargs.get("cwd")
         captured["user_prompt"] = kwargs.get("user_prompt")
-        return await base_fake(**kwargs)
+        result: RunResult = await base_fake(**kwargs)
+        return result
 
     async def runit() -> MissionMeta:
         return await dispatch(
@@ -701,7 +702,8 @@ def test_dispatch_passes_owns_paths_callback_to_runner(
 
     async def spy(**kwargs: Any) -> RunResult:
         captured["can_use_tool"] = kwargs.get("can_use_tool")
-        return await base_fake(**kwargs)
+        result: RunResult = await base_fake(**kwargs)
+        return result
 
     with patch.object(runner_mod, "run_specialist", spy):
         with patch.object(mission, "extract_memory_delta", _no_memory):
@@ -748,7 +750,8 @@ def test_dispatch_no_owns_paths_means_no_callback(
 
     async def spy(**kwargs: Any) -> RunResult:
         captured["can_use_tool"] = kwargs.get("can_use_tool")
-        return await base_fake(**kwargs)
+        result: RunResult = await base_fake(**kwargs)
+        return result
 
     with patch.object(runner_mod, "run_specialist", spy):
         with patch.object(mission, "extract_memory_delta", _no_memory):

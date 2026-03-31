@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
@@ -176,7 +177,7 @@ def test_dispatch_background_does_not_open_window(
     proj, spec = workspace_setup
 
     spawned_subprocesses: list[list[str]] = []
-    spawned_windows: list[dict[str, object]] = []
+    spawned_windows: list[dict[str, Any]] = []
 
     def fake_popen(argv: list[str], **kwargs: object) -> object:
         spawned_subprocesses.append(argv)
@@ -222,7 +223,7 @@ def test_dispatch_window_spawns_subprocess_and_terminal(
     proj, spec = workspace_setup
 
     spawned_subprocesses: list[list[str]] = []
-    spawned_windows: list[dict[str, object]] = []
+    spawned_windows: list[dict[str, Any]] = []
 
     def fake_popen(argv: list[str], **kwargs: object) -> object:
         spawned_subprocesses.append(argv)

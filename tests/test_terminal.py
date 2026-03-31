@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -92,8 +94,8 @@ def test_linux_picks_first_available(linux_with_display: None) -> None:
         spawned["argv"] = argv
         return _FakeProcess()
 
-    with patch.object(terminal.shutil, "which", side_effect=fake_which):
-        with patch.object(terminal.subprocess, "Popen", side_effect=fake_popen):
+    with patch.object(shutil, "which", side_effect=fake_which):
+        with patch.object(subprocess, "Popen", side_effect=fake_popen):
             ok = terminal._spawn_linux("title", ["echo", "hi"], None)
     assert ok is True
     assert spawned["argv"][0] == "xterm"
@@ -114,14 +116,14 @@ def test_linux_respects_terminal_env(linux_with_display: None, monkeypatch: pyte
         spawned["argv"] = argv
         return _FakeProcess()
 
-    with patch.object(terminal.shutil, "which", side_effect=fake_which):
-        with patch.object(terminal.subprocess, "Popen", side_effect=fake_popen):
+    with patch.object(shutil, "which", side_effect=fake_which):
+        with patch.object(subprocess, "Popen", side_effect=fake_popen):
             terminal._spawn_linux("t", ["echo"], None)
     assert spawned["argv"][0] == "alacritty"
 
 
 def test_linux_no_terminals_installed(linux_with_display: None) -> None:
-    with patch.object(terminal.shutil, "which", return_value=None):
+    with patch.object(shutil, "which", return_value=None):
         ok = terminal._spawn_linux("t", ["echo"], None)
     assert ok is False
 
@@ -190,7 +192,7 @@ def test_detect_parent_terminal_vte_picks_first_installed(
             return "/usr/bin/kgx"
         return None
 
-    with patch.object(terminal.shutil, "which", side_effect=fake_which):
+    with patch.object(shutil, "which", side_effect=fake_which):
         with patch.object(terminal, "_ancestor_terminal_from_proc", return_value=None):
             assert terminal._detect_parent_terminal() == "kgx"
 
@@ -221,8 +223,8 @@ def test_spawn_linux_prefers_detected_parent(
         spawned["argv"] = argv
         return _FakeProcess()
 
-    with patch.object(terminal.shutil, "which", side_effect=fake_which):
-        with patch.object(terminal.subprocess, "Popen", side_effect=fake_popen):
+    with patch.object(shutil, "which", side_effect=fake_which):
+        with patch.object(subprocess, "Popen", side_effect=fake_popen):
             with patch.object(terminal, "_ancestor_terminal_from_proc", return_value=None):
                 terminal._spawn_linux("t", ["echo", "hi"], None)
     assert spawned["argv"][0] == "ghostty"
@@ -240,7 +242,7 @@ def test_open_terminal_window_calls_linux_spawner() -> None:
 
 
 def test_open_terminal_window_unknown_platform_returns_false() -> None:
-    with patch.object(terminal.platform, "system", return_value="Plan9"):
+    with patch.object(platform, "system", return_value="Plan9"):
         assert terminal.open_terminal_window("t", ["echo"]) is False
 
 

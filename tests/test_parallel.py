@@ -486,7 +486,8 @@ def test_dispatch_parallel_workspace_full_flow(
             "cwd": kwargs.get("cwd"),
             "can_use_tool": kwargs.get("can_use_tool"),
         })
-        return await _fake_runner()(**kwargs)
+        result: RunResult = await _fake_runner()(**kwargs)
+        return result
 
     with patch.object(manager, "run_manager", _fake_manager(decomp)):
         with patch.object(runner_mod, "run_specialist", spy_runner):
@@ -538,7 +539,8 @@ def test_workspace_parallel_callbacks_enforce_distinct_lanes(
 
     async def spy_runner(**kwargs: Any) -> RunResult:
         callbacks_by_cwd.append((kwargs.get("on_message"), kwargs.get("can_use_tool")))
-        return await _fake_runner()(**kwargs)
+        result: RunResult = await _fake_runner()(**kwargs)
+        return result
 
     with patch.object(manager, "run_manager", _fake_manager(decomp)):
         with patch.object(runner_mod, "run_specialist", spy_runner):
@@ -996,11 +998,15 @@ def test_sequential_chain_each_task_sees_prior(
     by_id = {m.mission_id: m for m in result.sub_metas}
 
     # B's worktree should contain a.txt (committed by A on a's branch).
-    b_wt = Path(by_id["m-seq__b"].worktree_path)
+    b_path = by_id["m-seq__b"].worktree_path
+    assert b_path is not None
+    b_wt = Path(b_path)
     assert (b_wt / "a.txt").is_file()
 
     # C's worktree should contain BOTH a.txt and b.txt.
-    c_wt = Path(by_id["m-seq__c"].worktree_path)
+    c_path = by_id["m-seq__c"].worktree_path
+    assert c_path is not None
+    c_wt = Path(c_path)
     assert (c_wt / "a.txt").is_file()
     assert (c_wt / "b.txt").is_file()
 
@@ -1036,7 +1042,9 @@ def test_sequential_diamond_multi_dep_merges(
 
     assert result.parent_meta.status is ParallelStatus.COMPLETED
     by_id = {m.mission_id: m for m in result.sub_metas}
-    d_wt = Path(by_id["m-diamond__d"].worktree_path)
+    d_path = by_id["m-diamond__d"].worktree_path
+    assert d_path is not None
+    d_wt = Path(d_path)
     assert (d_wt / "a.txt").is_file()
     assert (d_wt / "b.txt").is_file()
     assert (d_wt / "c.txt").is_file()
