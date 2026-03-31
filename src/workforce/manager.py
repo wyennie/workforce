@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -553,15 +554,30 @@ def _exclude_covers(owns_pattern: str, excludes: list[str]) -> bool:
     return False
 
 
+def _glob_files(repo: Path, pattern: str) -> Iterator[Path]:
+    """Yield files matching `pattern` under `repo`.
+
+    On Python <3.13, ``Path.glob("src/**")`` returns only directories, while on
+    3.13+ it also returns files. Normalise both: if the glob hits a directory,
+    walk into it and yield its files.
+    """
+    for p in repo.glob(pattern):
+        if p.is_file():
+            yield p
+        elif p.is_dir():
+            for sub in p.rglob("*"):
+                if sub.is_file():
+                    yield sub
+
+
 def _resolve_paths(repo: Path, owns: list[str], excludes: list[str]) -> set[Path]:
     """Resolve owns/excludes globs to a set of concrete file paths under repo."""
     matched: set[Path] = set()
     for pattern in owns:
-        for p in repo.glob(pattern):
-            if p.is_file():
-                matched.add(p.resolve())
+        for p in _glob_files(repo, pattern):
+            matched.add(p.resolve())
     for pattern in excludes:
-        for p in repo.glob(pattern):
+        for p in _glob_files(repo, pattern):
             matched.discard(p.resolve())
     return matched
 
@@ -599,14 +615,13 @@ def audit_ownership(
 
     in_lane: set[str] = set()
     for pattern in owns_paths:
-        for p in worktree.glob(pattern):
-            if p.is_file():
-                try:
-                    in_lane.add(str(p.relative_to(worktree)))
-                except ValueError:
-                    continue
+        for p in _glob_files(worktree, pattern):
+            try:
+                in_lane.add(str(p.relative_to(worktree)))
+            except ValueError:
+                continue
     for pattern in excludes_paths:
-        for p in worktree.glob(pattern):
+        for p in _glob_files(worktree, pattern):
             try:
                 in_lane.discard(str(p.relative_to(worktree)))
             except ValueError:
