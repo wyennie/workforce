@@ -21,6 +21,8 @@ from workforce.worktree import (
     has_commits,
 )
 
+from .mission import render_labeled_event
+
 sub = typer.Typer(
     name="project",
     help="Register repos and assign specialists to them.",
@@ -463,10 +465,6 @@ def project_tail(
         f"[dim]({missions_dir})[/dim]"
     )
     output.rule()
-
-    # Avoid the cli_mission import at module load time (would create a cycle
-    # via the typer app registration). Import here.
-    from workforce.cli_mission import render_labeled_event
 
     # Per-mission read positions and labels.
     positions: dict[str, int] = {}
