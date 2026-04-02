@@ -1,6 +1,7 @@
 """Workforce CLI entry point.
 
-Commands are defined in `cli_*.py` modules and registered here.
+Each command group lives in its own module under this package; this file just
+builds the Typer app and registers them.
 """
 
 from __future__ import annotations
@@ -8,10 +9,12 @@ from __future__ import annotations
 import typer
 from rich.table import Table
 
-from workforce import cli_mission, cli_project, cli_roster, doctor, manage, output, paths
+from workforce import doctor, output, paths
 from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
+
+from . import cleanup, dispatch, manage, mission, project, roster
 
 app = typer.Typer(
     name="workforce",
@@ -75,26 +78,43 @@ def doctor_command() -> None:
 
 # ----- roster ---------------------------------------------------------------
 
-app.command("hire")(cli_roster.hire)
-app.command("fire")(cli_roster.fire)
-app.command("roster")(cli_roster.roster)
-app.command("show")(cli_roster.show)
-app.command("templates")(cli_roster.templates)
-app.command("refresh")(cli_roster.refresh)
+app.command("hire")(roster.hire)
+app.command("fire")(roster.fire)
+app.command("roster")(roster.roster)
+app.command("show")(roster.show)
+app.command("templates")(roster.templates)
+app.command("refresh")(roster.refresh)
 
 
 # ----- project --------------------------------------------------------------
 
-app.add_typer(cli_project.sub)
+app.add_typer(project.sub)
 
 
 # ----- mission --------------------------------------------------------------
 
-app.command("dispatch")(cli_mission.dispatch_command)
-app.command("missions")(cli_mission.missions_command)
-app.command("replay")(cli_mission.replay_command)
-app.add_typer(cli_mission.mission_sub)
-app.add_typer(cli_mission.branches_sub)
+app.command("dispatch")(dispatch.dispatch_command)
+app.command("missions")(mission.missions_command)
+app.command("replay")(mission.replay_command)
+
+mission_sub = typer.Typer(
+    name="mission",
+    help="Inspect and clean up individual missions.",
+    no_args_is_help=True,
+)
+mission_sub.command("show")(mission.mission_show)
+mission_sub.command("tail")(mission.mission_tail)
+mission_sub.command("clean")(cleanup.mission_clean)
+mission_sub.command("prune")(cleanup.mission_prune)
+app.add_typer(mission_sub)
+
+branches_sub = typer.Typer(
+    name="branches",
+    help="Inspect and clean up workforce/* branches in a project.",
+    no_args_is_help=True,
+)
+branches_sub.command("prune")(cleanup.branches_prune)
+app.add_typer(branches_sub)
 
 
 # ----- manage (interactive Manager chat) ------------------------------------
