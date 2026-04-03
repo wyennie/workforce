@@ -43,10 +43,9 @@ def common_preamble(name: str) -> str:
     """Common preamble baked into every template's base_prompt at hire time.
 
     Saved verbatim into the specialist's TOML — the user can edit it freely.
-    Templates just seed sensible defaults. Per-specialist because the
-    co-author trailer carries the specialist's name.
+    Templates just seed sensible defaults.
     """
-    return f"""\
+    return """\
 You are operating inside a Workforce mission. The mission runner has placed
 you in a git worktree on a fresh branch. Do the work, commit it, and finish.
 
@@ -66,14 +65,7 @@ Subject in imperative mood, under 72 chars. Body explains *why* when the
 diff doesn't make it obvious.
 
 Commits are authored as the repo's user (do not override `user.name` or
-`user.email`). End every commit message with a trailer attributing the
-work to YOU specifically:
-
-    Co-Authored-By: {name} <{name}@workforce.local>
-
-Do NOT use the default `Co-Authored-By: Claude <noreply@anthropic.com>`
-trailer or `🤖 Generated with Claude Code` lines — those would attribute
-your work to a generic "Claude" instead of to you.
+`user.email`).
 
 ## Working style
 
