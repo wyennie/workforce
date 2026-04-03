@@ -10,7 +10,8 @@ import typer
 from typer.testing import CliRunner
 
 from workforce.cli import app
-from workforce.cli_mission import _parse_duration, _parse_iso_z, _summarize_tool_args, _truncate
+from workforce.cli._common import _summarize_tool_args, _truncate
+from workforce.cli.cleanup import _parse_duration, _parse_iso_z
 from workforce.mission import MissionMeta, MissionStatus, mission_paths
 from workforce.project import Project, ProjectStore
 from workforce.specialist import RosterStore, Specialist
@@ -188,7 +189,7 @@ def test_dispatch_background_does_not_open_window(
         return True
 
     runner = CliRunner()
-    with patch("workforce.cli_mission.subprocess.Popen", side_effect=fake_popen):
+    with patch("workforce.cli.dispatch.subprocess.Popen", side_effect=fake_popen):
         with patch("workforce.terminal.open_terminal_window", side_effect=fake_open_window):
             result = runner.invoke(
                 app,
@@ -235,7 +236,7 @@ def test_dispatch_window_spawns_subprocess_and_terminal(
         return True
 
     runner = CliRunner()
-    with patch("workforce.cli_mission.subprocess.Popen", side_effect=fake_popen):
+    with patch("workforce.cli.dispatch.subprocess.Popen", side_effect=fake_popen):
         with patch("workforce.terminal.open_terminal_window", side_effect=fake_open_window):
             result = runner.invoke(
                 app,

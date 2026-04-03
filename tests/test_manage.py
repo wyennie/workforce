@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from workforce import manage
+from workforce.cli import manage
 from workforce.project import Project
 from workforce.specialist import RosterStore, Specialist
 

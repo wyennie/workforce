@@ -17,7 +17,7 @@ from claude_agent_sdk import (
 )
 from rich.console import Console
 
-from workforce.cli_panels import PanelDisplay, _format_message
+from workforce.cli.panels import PanelDisplay, _format_message
 
 
 def _assistant_text(text: str) -> AssistantMessage:

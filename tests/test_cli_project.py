@@ -155,7 +155,7 @@ def test_project_tail_renders_labeled_events_from_existing_missions(
         real_sleep(s)
 
     runner = CliRunner()
-    with patch("workforce.cli_project.time.sleep", side_effect=stub_sleep):
+    with patch("workforce.cli.project.time.sleep", side_effect=stub_sleep):
         result = runner.invoke(app, ["project", "tail", "myws"])
 
     # Exits cleanly via the KeyboardInterrupt handler.
@@ -203,7 +203,7 @@ def test_project_tail_handles_missions_dir_without_meta(
         real_sleep(s)
 
     runner = CliRunner()
-    with patch("workforce.cli_project.time.sleep", side_effect=stub_sleep):
+    with patch("workforce.cli.project.time.sleep", side_effect=stub_sleep):
         result = runner.invoke(app, ["project", "tail", "myws"])
 
     assert result.exit_code == 0, result.output
