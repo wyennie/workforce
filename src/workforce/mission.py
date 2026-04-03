@@ -1,7 +1,7 @@
 """Mission orchestrator.
 
-Composes prompts, manages the worktree+runner lifecycle, scans commits for
-forbidden trailers, extracts a memory delta, and writes mission artifacts.
+Composes prompts, manages the worktree+runner lifecycle, extracts a memory
+delta, and writes mission artifacts.
 
 This is the layer the CLI's `dispatch` command calls into. It returns a
 `MissionMeta` describing what happened; the CLI presents it.
@@ -44,8 +44,6 @@ class MissionStatus(StrEnum):
     ERROR = "error"
     WALL_TIMEOUT = "wall_timeout"
     INTERRUPTED = "interrupted"
-    # Mission ran fine but produced commits with forbidden Claude trailers.
-    TRAILER_VIOLATION = "trailer_violation"
     # Reviewer kept rejecting; revision loop hit its cap without approval.
     REVIEW_REJECTED = "review_rejected"
 
@@ -64,7 +62,6 @@ class CommitInfo(BaseModel):
     sha: str
     subject: str
     body: str = ""
-    trailer_violations: list[str] = Field(default_factory=list)
 
 
 class ReviewRecord(BaseModel):
@@ -318,20 +315,8 @@ async def extract_memory_delta(
 # ----- Commit scanning ------------------------------------------------------
 
 
-_TRAILER_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (
-        re.compile(r"^co-authored-by:.*noreply@anthropic\.com", re.IGNORECASE | re.MULTILINE),
-        "claude-coauthor-trailer",
-    ),
-    (
-        re.compile(r"generated with .{0,3}claude code", re.IGNORECASE),
-        "claude-code-attribution",
-    ),
-]
-
-
 def scan_commits(worktree_path: Path, base_sha: str) -> list[CommitInfo]:
-    """List commits on the worktree branch ahead of base_sha; flag violations.
+    """List commits on the worktree branch ahead of base_sha.
 
     Uses a NUL-delimited custom format so subjects/bodies with arbitrary
     whitespace round-trip safely.
@@ -355,12 +340,7 @@ def scan_commits(worktree_path: Path, base_sha: str) -> list[CommitInfo]:
             sha, subject, body = record.split("\x00", 2)
         except ValueError:
             continue
-        violations = [
-            label for pattern, label in _TRAILER_PATTERNS if pattern.search(body)
-        ]
-        commits.append(
-            CommitInfo(sha=sha, subject=subject, body=body, trailer_violations=violations)
-        )
+        commits.append(CommitInfo(sha=sha, subject=subject, body=body))
     return commits
 
 
@@ -430,12 +410,6 @@ def last_assistant_text(messages: list[Any]) -> str:
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _final_status(run_status: RunStatus, has_violations: bool) -> MissionStatus:
-    if run_status is RunStatus.COMPLETED:
-        return MissionStatus.TRAILER_VIOLATION if has_violations else MissionStatus.COMPLETED
-    return MissionStatus(run_status.value)
 
 
 @dataclass(frozen=True)
@@ -671,7 +645,7 @@ async def dispatch(
                 can_use_tool=can_use_tool,
             )
 
-    # Scan commits for trailer violations (regardless of run status).
+    # Collect commits for the mission record.
     # Workspace missions don't produce commits — skip the scan.
     if project.kind == "repo":
         assert env.base_sha is not None
@@ -681,7 +655,6 @@ async def dispatch(
             commits = []
     else:
         commits = []
-    has_violations = any(c.trailer_violations for c in commits)
 
     # Memory delta — only attempt on a clean run with a session id.
     delta: MemoryDelta | None = None
@@ -710,14 +683,11 @@ async def dispatch(
         )
 
     # Build + persist meta.
-    final_status = _final_status(run.status, has_violations)
+    final_status = (
+        MissionStatus.COMPLETED if run.status is RunStatus.COMPLETED
+        else MissionStatus(run.status.value)
+    )
     error_detail = run.error_detail
-    if final_status is MissionStatus.TRAILER_VIOLATION and not error_detail:
-        bad = [c.sha[:8] for c in commits if c.trailer_violations]
-        error_detail = (
-            f"forbidden Claude trailer in commits: {', '.join(bad)}. "
-            "Edit the commit messages and re-run if needed."
-        )
     # If the Reviewer was active and never approved, override the status.
     # We treat "loop exhausted without approval" as REVIEW_REJECTED.
     if review and review_records and not review_records[-1].approved:
