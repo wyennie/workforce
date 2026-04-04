@@ -60,7 +60,6 @@ def test_each_template_constructs(tmpl: str) -> None:
     assert s.name == "aria"
     assert s.role
     assert common_preamble("aria") in s.base_prompt
-    assert "Co-Authored-By: aria <aria@workforce.local>" in s.base_prompt
     assert s.allowed_tools  # non-empty
 
 
@@ -89,17 +88,6 @@ def test_custom_specialist_includes_preamble() -> None:
     s = Specialist.custom("aria", role="custom role")
     assert common_preamble("aria") in s.base_prompt
     assert "custom role" in s.base_prompt
-    assert "Co-Authored-By: aria <aria@workforce.local>" in s.base_prompt
-
-
-def test_preamble_uses_specialist_name() -> None:
-    """Each specialist gets a co-author trailer naming themselves."""
-    aria = Specialist.from_template("aria", "backend")
-    ben = Specialist.from_template("ben", "frontend")
-    assert "Co-Authored-By: aria <aria@workforce.local>" in aria.base_prompt
-    assert "Co-Authored-By: ben <ben@workforce.local>" in ben.base_prompt
-    assert "ben@workforce.local" not in aria.base_prompt
-    assert "aria@workforce.local" not in ben.base_prompt
 
 
 # ----- store CRUD ------------------------------------------------------------

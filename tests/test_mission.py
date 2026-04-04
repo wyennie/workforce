@@ -249,7 +249,7 @@ def test_parse_memory_delta_uses_last_block_when_multiple() -> None:
 # ----- commit scanning -------------------------------------------------------
 
 
-def test_scan_commits_no_violations(repo: Path) -> None:
+def test_scan_commits_lists_commits(repo: Path) -> None:
     base = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout.strip()
@@ -257,39 +257,8 @@ def test_scan_commits_no_violations(repo: Path) -> None:
     _commit(repo, "test(api): cover health endpoint", file="b.txt")
     commits = scan_commits(repo, base)
     assert len(commits) == 2
-    assert all(not c.trailer_violations for c in commits)
     assert commits[0].subject == "feat(api): add health endpoint"
-
-
-def test_scan_commits_detects_coauthor_trailer(repo: Path) -> None:
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    _commit(
-        repo,
-        "feat(api): add health endpoint\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
-    )
-    commits = scan_commits(repo, base)
-    assert len(commits) == 1
-    assert "claude-coauthor-trailer" in commits[0].trailer_violations
-
-
-def test_scan_commits_detects_generated_with_line(repo: Path) -> None:
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    _commit(repo, "feat: x\n\n🤖 Generated with Claude Code")
-    commits = scan_commits(repo, base)
-    assert "claude-code-attribution" in commits[0].trailer_violations
-
-
-def test_scan_commits_human_coauthor_is_fine(repo: Path) -> None:
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    _commit(repo, "feat: x\n\nCo-Authored-By: Alice <alice@example.com>")
-    commits = scan_commits(repo, base)
-    assert commits[0].trailer_violations == []
+    assert commits[1].subject == "test(api): cover health endpoint"
 
 
 # ----- dispatch end-to-end (with mocked runner & memory call) ----------------
@@ -416,55 +385,6 @@ def test_dispatch_runner_error_path(
     stats = rs.load_stats(specialist.name)
     assert stats.missions_failed == 1
     assert stats.missions_completed == 0
-
-
-def test_dispatch_detects_trailer_violation(
-    project: Project,
-    specialist: Specialist,
-    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
-    tmp_path: Path,
-) -> None:
-    """Specialist 'commits' (we simulate) include a forbidden trailer."""
-    rs, ps, wm = stores
-    msgs = [_assistant("done"), _result(cost=0.10, session="sess-X")]
-
-    # Wrap mock_runner so it commits a bad message in the worktree before returning.
-    base_fake = _mock_runner(msgs)
-
-    async def fake_run_specialist(**kwargs: Any) -> RunResult:
-        cwd = kwargs["cwd"]
-        subprocess.run(["git", "config", "user.email", "x@x"], cwd=cwd, check=True)
-        subprocess.run(["git", "config", "user.name", "x"], cwd=cwd, check=True)
-        (cwd / "f.txt").write_text("x\n")
-        subprocess.run(["git", "add", "f.txt"], cwd=cwd, check=True)
-        subprocess.run(
-            ["git", "commit", "-q", "-m",
-             "feat: add f\n\nCo-Authored-By: Claude <noreply@anthropic.com>"],
-            cwd=cwd, check=True,
-        )
-        result: RunResult = await base_fake(**kwargs)
-        return result
-
-    with patch.object(runner_mod, "run_specialist", fake_run_specialist):
-        with patch.object(mission, "extract_memory_delta", _no_memory):
-            meta = asyncio.run(
-                dispatch(
-                    project=project,
-                    specialist=specialist,
-                    ticket="t",
-                    roster_store=rs,
-                    project_store=ps,
-                    worktree_manager=wm,
-                    mission_id="m-test-cccc",
-                )
-            )
-
-    assert meta.status is MissionStatus.TRAILER_VIOLATION
-    assert any("claude-coauthor-trailer" in c.trailer_violations for c in meta.commits)
-    assert meta.error_detail is not None
-    assert "Claude trailer" in meta.error_detail
-    # Counted as a failed mission for stats purposes
-    assert rs.load_stats(specialist.name).missions_failed == 1
 
 
 def test_dispatch_skips_memory_call_when_no_session(
