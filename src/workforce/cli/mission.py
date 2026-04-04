@@ -255,10 +255,8 @@ def _show_single_meta(proj: project_mod.Project, meta: MissionMeta) -> None:
         ctable = Table(show_header=True, header_style="bold")
         ctable.add_column("sha")
         ctable.add_column("subject", overflow="fold")
-        ctable.add_column("flags")
         for c in meta.commits:
-            flags = ", ".join(c.trailer_violations) if c.trailer_violations else ""
-            ctable.add_row(c.sha[:8], c.subject, f"[red]{flags}[/red]" if flags else "")
+            ctable.add_row(c.sha[:8], c.subject)
         output.print_table(ctable)
 
 

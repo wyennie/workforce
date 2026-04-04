@@ -124,7 +124,6 @@ _STATUS_STYLES = {
     MissionStatus.ERROR: "[red]error[/red]",
     MissionStatus.WALL_TIMEOUT: "[yellow]wall_timeout[/yellow]",
     MissionStatus.INTERRUPTED: "[yellow]interrupted[/yellow]",
-    MissionStatus.TRAILER_VIOLATION: "[red]trailer_violation[/red]",
     MissionStatus.REVIEW_REJECTED: "[red]review_rejected[/red]",
 }
 
