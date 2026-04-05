@@ -218,7 +218,7 @@ class Specialist(BaseModel):
             name=name,
             role=role,
             model=model or DEFAULT_MODEL,
-            allowed_tools=(allowed_tools or ALL_DEV_TOOLS).copy(),
+            allowed_tools=(allowed_tools if allowed_tools is not None else ALL_DEV_TOOLS).copy(),
             base_prompt=common_preamble(name) + "\n## Role\n\n" + role + "\n",
         )
 
