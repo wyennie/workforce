@@ -690,7 +690,9 @@ async def dispatch(
     error_detail = run.error_detail
     # If the Reviewer was active and never approved, override the status.
     # We treat "loop exhausted without approval" as REVIEW_REJECTED.
-    if review and review_records and not review_records[-1].approved:
+    # Only override when the run itself completed — WALL_TIMEOUT/ERROR should
+    # keep their own status so callers can distinguish the failure mode.
+    if review and review_records and not review_records[-1].approved and run.status is RunStatus.COMPLETED:
         final_status = MissionStatus.REVIEW_REJECTED
         last = review_records[-1]
         error_detail = (
