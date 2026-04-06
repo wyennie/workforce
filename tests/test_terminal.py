@@ -339,6 +339,44 @@ def test_spawn_macos_applescript_no_injection(monkeypatch: pytest.MonkeyPatch) -
     )
 
 
+# ----- _spawn_windows cmd.exe quoting ---------------------------------------
+
+
+def test_spawn_windows_uses_double_quote_not_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Args with spaces must be double-quoted (cmd.exe style), not single-quoted."""
+    captured: dict[str, Any] = {}
+
+    def fake_popen(cmd_str: str, **kwargs: Any) -> Any:
+        captured["full"] = cmd_str
+        return _FakeProcess()
+
+    with patch.object(subprocess, "Popen", side_effect=fake_popen):
+        terminal._spawn_windows("My Title", ["my prog", "arg with spaces"], None)
+
+    full = captured["full"]
+    # Must use double-quotes for cmd.exe, not POSIX single-quotes.
+    assert "'" not in full or full.index('"') < full.index("'"), (
+        "cmd.exe quoting should use double-quotes, not single-quotes"
+    )
+    assert '"arg with spaces"' in full or '"my prog"' in full
+
+
+def test_spawn_windows_simple_arg_no_quotes() -> None:
+    """Simple args (no spaces) should not be quoted unnecessarily."""
+    captured: dict[str, Any] = {}
+
+    def fake_popen(cmd_str: str, **kwargs: Any) -> Any:
+        captured["full"] = cmd_str
+        return _FakeProcess()
+
+    with patch.object(subprocess, "Popen", side_effect=fake_popen):
+        terminal._spawn_windows("t", ["echo", "hello"], None)
+
+    full = captured["full"]
+    assert "echo" in full
+    assert "hello" in full
+
+
 # ----- helpers --------------------------------------------------------------
 
 

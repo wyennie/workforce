@@ -407,8 +407,11 @@ def _spawn_macos(title: str, cmd: list[str], cwd: Path | None) -> bool:
 
 def _spawn_windows(title: str, cmd: list[str], cwd: Path | None) -> bool:
     # `start "title" cmd /k <command>` opens a new console; /k keeps it open.
-    cmd_str = " ".join(shlex.quote(a) for a in cmd)
-    full = f'start "{title}" cmd /k "{cmd_str}"'
+    # subprocess.list2cmdline applies Windows cmd.exe double-quote escaping.
+    # shlex.quote would produce POSIX single-quotes, which cmd.exe does not
+    # understand: paths with spaces would be passed with literal quote chars.
+    cmd_str = subprocess.list2cmdline(cmd)
+    full = f'start "{title}" cmd /k {cmd_str}'
     try:
         subprocess.Popen(  # noqa: S602 — using shell=True is required for `start`
             full,
