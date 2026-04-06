@@ -175,6 +175,11 @@ def dispatch_command(
             review=review, max_revisions=max_revisions,
             open_window=window,
             branch=branch,
+            auto_merge=auto_merge,
+            merge_into=merge_into,
+            auto_staff=auto_staff,
+            panels=panels,
+            yes=yes,
         )
         return
 
@@ -334,6 +339,11 @@ def _dispatch_detached(
     max_revisions: int,
     open_window: bool,
     branch: str | None = None,
+    auto_merge: bool = False,
+    merge_into: str | None = None,
+    auto_staff: bool = True,
+    panels: bool = False,
+    yes: bool = False,
 ) -> None:
     """`--window` / `--background` shared path.
 
@@ -369,6 +379,16 @@ def _dispatch_detached(
         argv += ["--review", "--max-revisions", str(max_revisions)]
     if branch is not None:
         argv += ["--branch", branch]
+    if auto_merge:
+        argv += ["--auto-merge"]
+    if merge_into is not None:
+        argv += ["--merge-into", merge_into]
+    if not auto_staff:
+        argv += ["--no-auto-staff"]
+    if panels:
+        argv += ["--panels"]
+    if yes:
+        argv += ["--yes"]
 
     # Detach so the child survives this process exiting. stdout/stderr go to
     # /dev/null — the tail window renders from events.jsonl, not stdout.

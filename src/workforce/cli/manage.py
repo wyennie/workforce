@@ -345,6 +345,7 @@ async def run_manager_chat(
                     turn_done.set()
         except Exception as e:  # SDK or transport failure
             output.fail(f"chat session ended: {type(e).__name__}: {e}")
+            turn_done.set()   # unblock input_loop so gather() can exit
             stop.set()
 
     async def input_loop() -> None:
