@@ -351,11 +351,35 @@ def _spawn_linux(title: str, cmd: list[str], cwd: Path | None) -> bool:
 # ----- macOS ----------------------------------------------------------------
 
 
+def _ansi_c_quote(s: str) -> str:
+    """Shell-quote *s* using ANSI-C ``$'...'`` syntax.
+
+    ``shlex.quote`` handles embedded single-quotes via the ``'"'"'`` trick,
+    which introduces double-quote characters.  When the resulting shell
+    command is then embedded in an AppleScript double-quoted string literal,
+    we must escape every ``"`` as ``\"``.  That second escaping breaks the
+    ``'"'"'`` structure: the shell parser sees the backtick (or ``$()``)
+    that was supposed to be inside a single-quoted region as unquoted text,
+    enabling command injection.
+
+    ``$'...'`` syntax sidesteps the conflict entirely: only ``\\`` and ``\\'``
+    need escaping, and neither is a double-quote.  Backticks and ``$()``
+    are inert inside ``$'...'`` regardless of surrounding context, and the
+    syntax is supported by both ``bash`` and ``zsh`` (the only login shells
+    used on modern macOS).
+    """
+    escaped = s.replace("\\", "\\\\").replace("'", "\\'")
+    return f"$'{escaped}'"
+
+
 def _spawn_macos(title: str, cmd: list[str], cwd: Path | None) -> bool:
     # AppleScript: open a new Terminal window and run the command.
-    cmd_str = " ".join(shlex.quote(a) for a in cmd)
+    # Use ANSI-C $'...' quoting (not shlex.quote) so the result contains no
+    # double-quote characters that would be mangled by the AppleScript string
+    # escaping below.
+    cmd_str = " ".join(_ansi_c_quote(a) for a in cmd)
     if cwd is not None:
-        cmd_str = f"cd {shlex.quote(str(cwd))} && {cmd_str}"
+        cmd_str = f"cd {_ansi_c_quote(str(cwd))} && {cmd_str}"
     # Escape for AppleScript double-quoted string: \ → \\, " → \"
     escaped = cmd_str.replace("\\", "\\\\").replace('"', '\\"')
     title_escaped = title.replace("\\", "\\\\").replace('"', '\\"')
