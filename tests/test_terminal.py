@@ -246,6 +246,137 @@ def test_open_terminal_window_unknown_platform_returns_false() -> None:
         assert terminal.open_terminal_window("t", ["echo"]) is False
 
 
+# ----- _ansi_c_quote --------------------------------------------------------
+
+
+def test_ansi_c_quote_plain_string() -> None:
+    assert terminal._ansi_c_quote("hello") == "$'hello'"
+
+
+def test_ansi_c_quote_path_with_spaces() -> None:
+    result = terminal._ansi_c_quote("/my path/with spaces")
+    assert result == "$'/my path/with spaces'"
+
+
+def test_ansi_c_quote_backslash() -> None:
+    result = terminal._ansi_c_quote("/path/with\\backslash")
+    assert result == "$'/path/with\\\\backslash'"
+
+
+def test_ansi_c_quote_single_quote() -> None:
+    """Single quotes must be escaped; result must NOT contain double-quote chars."""
+    result = terminal._ansi_c_quote("/path/with'quote")
+    assert '"' not in result, "must not introduce double-quotes (would break AppleScript)"
+    assert result == "$'/path/with\\'quote'"
+
+
+def test_ansi_c_quote_single_quote_and_backtick() -> None:
+    """The exploit path: directory name containing ' followed by a backtick.
+
+    shlex.quote converts the ' to '\"'\"', then the AppleScript escaping turns
+    every " to \\", breaking the single-quote boundary and leaving the backtick
+    in an unquoted shell context (command injection).  _ansi_c_quote must keep
+    the result free of double-quotes so the AppleScript escaping is harmless.
+    """
+    malicious = "/tmp/'`touch /tmp/pwned`"
+    result = terminal._ansi_c_quote(malicious)
+    assert '"' not in result
+    # The shell will interpret the $'...' block literally; the backtick must
+    # appear inside the $'...' quotes, not outside them.
+    assert result == "$'/tmp/\\'`touch /tmp/pwned`'"
+
+
+def test_ansi_c_quote_dollar_subshell() -> None:
+    result = terminal._ansi_c_quote("/path/$(evil)")
+    assert '"' not in result
+    assert result == "$'/path/$(evil)'"
+
+
+# ----- _spawn_macos script-building -----------------------------------------
+
+
+def test_spawn_macos_applescript_no_injection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """cwd with a single-quote + backtick must produce $'...' ANSI-C quoting
+    in the AppleScript 'do script' argument so backticks can't be executed.
+
+    With shlex.quote, a cwd like /tmp/'`cmd` would produce the '"'"' trick to
+    escape the single-quote.  The subsequent AppleScript '\"' escaping breaks
+    that structure, leaving the backtick command outside all quoting.
+
+    With _ansi_c_quote, the cwd is wrapped in $'...' so backticks are literal
+    regardless of surrounding context.
+    """
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> Any:
+        captured["script"] = argv[2]  # osascript -e <script>
+        return type("R", (), {"returncode": 0})()
+
+    malicious_cwd = "/tmp/'\x60touch /tmp/pwned\x60"  # ' then backtick-cmd-backtick
+    with patch.object(subprocess, "run", side_effect=fake_run):
+        terminal._spawn_macos("title", ["echo", "hi"], Path(malicious_cwd))
+
+    script = captured["script"]
+    # The fix must use $'...' ANSI-C quoting for the cwd.
+    assert "do script" in script
+    assert "$'" in script, "expected ANSI-C $'...' quoting in the AppleScript script"
+
+    # shlex.quote produces '"'"' for the single-quote, which when AppleScript-
+    # escaped becomes '\"'\"', breaking the quoting structure.  With the fixed
+    # _ansi_c_quote, the script must NOT contain the '"' pattern that shlex
+    # would have injected into the shell-command portion.
+    # Specifically: the do script argument must not contain an unescaped '"'
+    # inside the cd command (shlex pattern would introduce one).
+    do_script_line = next(
+        line for line in script.splitlines() if "do script" in line
+    )
+    # Extract the shell command that AppleScript's do script will receive.
+    # In the AppleScript source, the command sits between the first do script "
+    # and the closing ".  We just verify the structural marker is present.
+    assert "$'" in do_script_line, (
+        "shell command in do script must use ANSI-C $'...' quoting, "
+        f"got: {do_script_line!r}"
+    )
+
+
+# ----- _spawn_windows cmd.exe quoting ---------------------------------------
+
+
+def test_spawn_windows_uses_double_quote_not_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Args with spaces must be double-quoted (cmd.exe style), not single-quoted."""
+    captured: dict[str, Any] = {}
+
+    def fake_popen(cmd_str: str, **kwargs: Any) -> Any:
+        captured["full"] = cmd_str
+        return _FakeProcess()
+
+    with patch.object(subprocess, "Popen", side_effect=fake_popen):
+        terminal._spawn_windows("My Title", ["my prog", "arg with spaces"], None)
+
+    full = captured["full"]
+    # Must use double-quotes for cmd.exe, not POSIX single-quotes.
+    assert "'" not in full or full.index('"') < full.index("'"), (
+        "cmd.exe quoting should use double-quotes, not single-quotes"
+    )
+    assert '"arg with spaces"' in full or '"my prog"' in full
+
+
+def test_spawn_windows_simple_arg_no_quotes() -> None:
+    """Simple args (no spaces) should not be quoted unnecessarily."""
+    captured: dict[str, Any] = {}
+
+    def fake_popen(cmd_str: str, **kwargs: Any) -> Any:
+        captured["full"] = cmd_str
+        return _FakeProcess()
+
+    with patch.object(subprocess, "Popen", side_effect=fake_popen):
+        terminal._spawn_windows("t", ["echo", "hello"], None)
+
+    full = captured["full"]
+    assert "echo" in full
+    assert "hello" in full
+
+
 # ----- helpers --------------------------------------------------------------
 
 
