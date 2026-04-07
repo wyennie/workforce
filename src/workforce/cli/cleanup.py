@@ -12,11 +12,11 @@ from pathlib import Path
 
 import typer
 
-from workforce import output, parallel, paths
+from workforce import output, paths
 from workforce import project as project_mod
 from workforce.mission import MissionMeta, MissionStatus
 from workforce.parallel import ParallelMissionMeta
-from workforce.worktree import WorktreeManager, find_workforce_branches
+from workforce.worktree import WorktreeManager, current_branch, find_workforce_branches
 
 from ._common import _find_mission, _list_project_missions
 
@@ -125,7 +125,7 @@ def branches_prune(
     target = into
     if target is None:
         # Default: current branch of the source repo.
-        target = parallel._current_branch(repo)
+        target = current_branch(repo)
         if target is None:
             output.die(
                 "could not determine current branch (detached HEAD?). "

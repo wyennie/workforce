@@ -43,7 +43,7 @@ from workforce.specialist import (
     RosterStore,
     Specialist,
 )
-from workforce.worktree import WorktreeManager
+from workforce.worktree import WorktreeManager, current_branch, is_clean
 
 SCHEMA_VERSION = 1
 
@@ -723,24 +723,6 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     return r.returncode == 0
 
 
-def _current_branch(repo: Path) -> str | None:
-    r = subprocess.run(
-        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
-        cwd=repo, capture_output=True, text=True,
-    )
-    return r.stdout.strip() if r.returncode == 0 else None
-
-
-def _is_clean(repo: Path) -> bool:
-    """True iff `git status --porcelain` has no staged/modified entries
-    (untracked files are tolerated, matching worktree manager policy)."""
-    out = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=repo, capture_output=True, text=True, check=True,
-    ).stdout
-    return all(line.startswith("??") for line in out.splitlines() if line)
-
-
 def auto_merge_into(
     repo_path: Path,
     plan: list[MergeStep],
@@ -758,12 +740,12 @@ def auto_merge_into(
         raise MergePreflightError(
             f"target branch {target_branch!r} doesn't exist in {repo_path}"
         )
-    if not _is_clean(repo_path):
+    if not is_clean(repo_path):
         raise MergePreflightError(
             f"{repo_path} has uncommitted changes; commit or stash before "
             "auto-merging (untracked files are fine)"
         )
-    current = _current_branch(repo_path)
+    current = current_branch(repo_path)
     if current != target_branch:
         switch = subprocess.run(
             ["git", "switch", target_branch],

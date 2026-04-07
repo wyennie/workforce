@@ -102,6 +102,28 @@ def ensure_branch(repo_path: Path, name: str) -> None:
         )
 
 
+def current_branch(repo_path: Path) -> str | None:
+    """Return the short name of the currently checked-out branch, or None if detached."""
+    r = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=repo_path, capture_output=True, text=True,
+    )
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def is_clean(repo_path: Path) -> bool:
+    """True iff `git status --porcelain` has no staged/modified entries.
+
+    Untracked files (lines starting with '??') are tolerated, matching the
+    worktree manager creation policy.
+    """
+    out = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo_path, capture_output=True, text=True, check=True,
+    ).stdout
+    return all(line.startswith("??") for line in out.splitlines() if line)
+
+
 def find_workforce_branches(repo_path: Path, *, merged_into: str | None = None) -> list[str]:
     """List `workforce/*` branches in `repo_path`.
 
