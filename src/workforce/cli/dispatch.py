@@ -12,7 +12,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import typer
 from claude_agent_sdk import (
@@ -744,7 +744,7 @@ _STAFFING_LABELS = {
 # replan; the .feedback string is what they typed.
 @dataclass
 class ConfirmDecision:
-    action: str  # "proceed" | "cancel" | "discuss"
+    action: Literal["proceed", "cancel", "discuss"]
     feedback: str = ""
 
 
