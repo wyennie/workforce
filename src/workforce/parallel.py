@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -265,8 +266,7 @@ def _build_specialist_info(
             if not meta_path.is_file():
                 continue
             try:
-                import json as _json
-                meta = _json.loads(meta_path.read_text())
+                meta = json.loads(meta_path.read_text())
             except (OSError, ValueError):
                 continue
             if meta.get("status") != "completed":
