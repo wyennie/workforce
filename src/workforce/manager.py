@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -409,10 +410,10 @@ def _topological_sort(tasks: list[Task]) -> list[str]:
             indeg[t.id] += 1
             edges[dep].append(t.id)
 
-    queue = [tid for tid, d in indeg.items() if d == 0]
+    queue: deque[str] = deque(tid for tid, d in indeg.items() if d == 0)
     order: list[str] = []
     while queue:
-        tid = queue.pop(0)
+        tid = queue.popleft()
         order.append(tid)
         for nxt in edges[tid]:
             indeg[nxt] -= 1
