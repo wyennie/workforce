@@ -28,12 +28,15 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from workforce.specialist import DEFAULT_MODEL
+from workforce.utils import _FENCE_RE
+
 SCHEMA_VERSION = 1
 
 
 # Manager runs as a built-in role, not a hireable specialist. The user doesn't
 # hire/fire managers; one is invoked implicitly when --parallel is used.
-DEFAULT_MANAGER_MODEL = "claude-sonnet-4-6"
+DEFAULT_MANAGER_MODEL = DEFAULT_MODEL
 MANAGER_ALLOWED_TOOLS = ["Read", "Glob", "Grep"]
 
 
@@ -280,9 +283,6 @@ def _user_prompt(
 
 
 # ----- Parsing --------------------------------------------------------------
-
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 
 class ManagerError(Exception):

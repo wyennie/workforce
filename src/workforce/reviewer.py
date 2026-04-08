@@ -30,10 +30,13 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from workforce.specialist import DEFAULT_MODEL
+from workforce.utils import _FENCE_RE
+
 SCHEMA_VERSION = 1
 
 
-DEFAULT_REVIEWER_MODEL = "claude-sonnet-4-6"
+DEFAULT_REVIEWER_MODEL = DEFAULT_MODEL
 REVIEWER_ALLOWED_TOOLS = ["Read", "Glob", "Grep", "Bash"]
 
 
@@ -166,9 +169,6 @@ def _user_prompt(
 
 
 # ----- Parsing --------------------------------------------------------------
-
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 
 def parse_review(text: str) -> Review:
