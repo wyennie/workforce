@@ -33,22 +33,9 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from workforce.cli._common import _summarize_tool_args, _truncate
+
 _DEFAULT_LINES_PER_PANEL = 10
-
-
-def _truncate(s: str, n: int) -> str:
-    s = s.strip()
-    return s if len(s) <= n else s[: n - 1] + "…"
-
-
-def _summarize_tool_args(name: str, args: dict[str, Any]) -> str:
-    for key in ("file_path", "path", "command", "pattern", "url", "query"):
-        if key in args:
-            return f"{key}={args[key]!r}"
-    if args:
-        first_key = next(iter(args))
-        return f"{first_key}={args[first_key]!r}"
-    return ""
 
 
 def _format_message(msg: Any) -> tuple[list[str], str | None]:

@@ -22,10 +22,10 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from workforce import paths
+from workforce.utils import _dump_toml
 
 SCHEMA_VERSION = 1
 ID_LENGTH = 12
@@ -215,5 +215,3 @@ class ProjectStore:
         shutil.rmtree(self._dir(project_id))
 
 
-def _dump_toml(data: dict[str, Any]) -> str:
-    return tomli_w.dumps(data, multiline_strings=True)

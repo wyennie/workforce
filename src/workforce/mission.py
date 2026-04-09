@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
-import re
 import secrets
 import subprocess
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ from workforce.project import Project, ProjectStore
 from workforce.reviewer import Review, ReviewError
 from workforce.runner import EventCallback, RunLimits, RunStatus
 from workforce.specialist import RosterStore, Specialist
+from workforce.utils import _FENCE_RE
 from workforce.worktree import WorktreeManager
 
 SCHEMA_VERSION = 1
@@ -241,9 +241,6 @@ short paragraph at most. Use empty string for any field with nothing useful.
 
 Be specific or be empty. No padding.
 """
-
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 
 def parse_memory_delta(text: str) -> MemoryDelta | None:

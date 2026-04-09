@@ -23,10 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from workforce import paths
+from workforce.utils import _dump_toml
 
 SCHEMA_VERSION = 1
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -343,6 +343,3 @@ class RosterStore:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def _dump_toml(data: dict[str, Any]) -> str:
-    """Serialize to TOML. Multi-line strings rendered literally for readability."""
-    return tomli_w.dumps(data, multiline_strings=True)
