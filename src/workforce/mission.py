@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import fcntl
 import json
+import logging
 import secrets
 import subprocess
 from dataclasses import dataclass
@@ -301,7 +303,10 @@ async def extract_memory_delta(
 
     try:
         await asyncio.wait_for(consume(), timeout=timeout_seconds)
-    except (TimeoutError, Exception):
+    except TimeoutError:
+        return None, cost
+    except Exception as e:
+        logging.getLogger(__name__).debug("memory delta failed: %s", e)
         return None, cost
 
     if not collected:
