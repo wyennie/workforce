@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -338,7 +339,12 @@ def validate_decomposition(
     - For `parallel`: tasks with no shared deps don't have overlapping
       `owns_paths` (after applying `excludes_paths`).
     - For `parallel` requiring contract coordination, `contract.needed=True`.
-    - Suggested specialists exist in the roster (if list provided).
+
+    `available_specialists` is accepted for backwards compatibility but is NOT
+    checked here. Specialist existence is intentionally deferred to
+    `parallel.resolve_task_specialists`, which handles auto-assignment and
+    auto-hiring from templates. Validating here would reject legitimate
+    auto-hire cases before the resolver gets a chance to satisfy them.
     """
     if not decomp.tasks:
         raise ValidationError("decomposition has no tasks")
@@ -409,10 +415,10 @@ def _topological_sort(tasks: list[Task]) -> list[str]:
             indeg[t.id] += 1
             edges[dep].append(t.id)
 
-    queue = [tid for tid, d in indeg.items() if d == 0]
+    queue: deque[str] = deque(tid for tid, d in indeg.items() if d == 0)
     order: list[str] = []
     while queue:
-        tid = queue.pop(0)
+        tid = queue.popleft()
         order.append(tid)
         for nxt in edges[tid]:
             indeg[nxt] -= 1
