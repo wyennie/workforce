@@ -339,7 +339,12 @@ def validate_decomposition(
     - For `parallel`: tasks with no shared deps don't have overlapping
       `owns_paths` (after applying `excludes_paths`).
     - For `parallel` requiring contract coordination, `contract.needed=True`.
-    - Suggested specialists exist in the roster (if list provided).
+
+    `available_specialists` is accepted for backwards compatibility but is NOT
+    checked here. Specialist existence is intentionally deferred to
+    `parallel.resolve_task_specialists`, which handles auto-assignment and
+    auto-hiring from templates. Validating here would reject legitimate
+    auto-hire cases before the resolver gets a chance to satisfy them.
     """
     if not decomp.tasks:
         raise ValidationError("decomposition has no tasks")
