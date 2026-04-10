@@ -752,4 +752,8 @@ def _append_project_memory(path: Path, entry: str) -> None:
     if not entry.endswith("\n"):
         entry = entry + "\n"
     with path.open("a") as f:
-        f.write(entry)
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.write(entry)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
