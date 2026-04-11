@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import fcntl
 import json
+import logging
 import secrets
 import subprocess
 from dataclasses import dataclass
@@ -301,7 +303,10 @@ async def extract_memory_delta(
 
     try:
         await asyncio.wait_for(consume(), timeout=timeout_seconds)
-    except (TimeoutError, Exception):
+    except TimeoutError:
+        return None, cost
+    except Exception as e:
+        logging.getLogger(__name__).debug("memory delta failed: %s", e)
         return None, cost
 
     if not collected:
@@ -644,12 +649,14 @@ async def dispatch(
 
     # Collect commits for the mission record.
     # Workspace missions don't produce commits — skip the scan.
+    commit_scan_error: str | None = None
     if project.kind == "repo":
         assert env.base_sha is not None
         try:
             commits = scan_commits(env.cwd, env.base_sha)
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as exc:
             commits = []
+            commit_scan_error = f"commit scan failed: {exc}"
     else:
         commits = []
 
@@ -685,6 +692,8 @@ async def dispatch(
         else MissionStatus(run.status.value)
     )
     error_detail = run.error_detail
+    if commit_scan_error:
+        error_detail = f"{error_detail}; {commit_scan_error}" if error_detail else commit_scan_error
     # If the Reviewer was active and never approved, override the status.
     # We treat "loop exhausted without approval" as REVIEW_REJECTED.
     # Only override when the run itself completed — WALL_TIMEOUT/ERROR should
@@ -747,4 +756,8 @@ def _append_project_memory(path: Path, entry: str) -> None:
     if not entry.endswith("\n"):
         entry = entry + "\n"
     with path.open("a") as f:
-        f.write(entry)
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.write(entry)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
