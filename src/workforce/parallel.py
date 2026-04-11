@@ -339,6 +339,7 @@ async def dispatch_parallel(
     review: bool = False,
     max_revisions: int = 3,
     base_branch: str | None = None,
+    manager_cost_usd: float = 0.0,
 ) -> ParallelDispatchResult:
     """Plan with the Manager, validate, optionally confirm, then fan out.
 
@@ -352,7 +353,7 @@ async def dispatch_parallel(
     parent_paths.root.mkdir(parents=True, exist_ok=True)
 
     started_iso = _now_iso()
-    manager_cost = 0.0
+    manager_cost = manager_cost_usd
 
     # ---- 1. Plan (or use override) ----
     if decomposition_override is not None:
