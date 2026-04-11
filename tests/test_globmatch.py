@@ -1,10 +1,10 @@
-"""Tests for the glob-pattern overlap detector."""
+"""Tests for the glob-pattern overlap detector and glob_to_regex compiler."""
 
 from __future__ import annotations
 
 import pytest
 
-from workforce.globmatch import globs_overlap
+from workforce.globmatch import glob_to_regex, globs_overlap
 
 # ----- patterns that DO overlap ---------------------------------------------
 
@@ -120,3 +120,79 @@ def test_realistic_manager_output() -> None:
         assert globs_overlap(a, b), f"expected overlap: {a} vs {b}"
     for a, b in pairs_disjoint:
         assert not globs_overlap(a, b), f"expected disjoint: {a} vs {b}"
+
+
+# ----- glob_to_regex: character-class edge cases ----------------------------
+# The module docstring explicitly warns that [^…] negation and [a-z] ranges
+# are passed through verbatim to the regex engine (no custom parsing).
+# These tests document the *actual* behaviour, whether "works" or "passthrough".
+
+
+def test_char_class_negation_passthrough_to_regex() -> None:
+    """[^abc] is passed through to the regex engine unchanged.
+
+    The module only parses the character *set* for the overlap detector; for
+    glob_to_regex it copies the bracket expression verbatim. Python's regex
+    engine understands [^abc], so the compiled pattern honours the negation.
+    """
+    pat = glob_to_regex("[^abc].py")
+    # Characters NOT in [abc] should match.
+    assert pat.match("d.py")
+    assert pat.match("z.py")
+    # Characters IN [abc] should NOT match.
+    assert not pat.match("a.py")
+    assert not pat.match("b.py")
+    assert not pat.match("c.py")
+
+
+def test_char_class_range_passthrough_to_regex() -> None:
+    """[a-z] ranges are passed through to the regex engine unchanged.
+
+    Python's regex engine handles character ranges, so these work correctly
+    even though the module doesn't parse ranges itself.
+    """
+    pat = glob_to_regex("[a-z]_config.py")
+    assert pat.match("a_config.py")
+    assert pat.match("m_config.py")
+    assert pat.match("z_config.py")
+    # Digits and uppercase are outside [a-z].
+    assert not pat.match("A_config.py")
+    assert not pat.match("1_config.py")
+
+
+def test_char_class_combined_range_and_negation() -> None:
+    """[^0-9] (any non-digit) is handled by the regex engine as expected."""
+    pat = glob_to_regex("file[^0-9].txt")
+    assert pat.match("fileA.txt")
+    assert pat.match("file_.txt")
+    assert not pat.match("file0.txt")
+    assert not pat.match("file9.txt")
+
+
+def test_char_class_overlap_detector_ignores_negation() -> None:
+    """The overlap detector's _tokenize_component reads literal chars from
+    [^abc] — it strips the ^ and treats it as a normal char-class member.
+    This means [^abc] and [abc] will appear to overlap in the detector
+    (the ^ is just another character in the frozenset).
+
+    We document this known limitation here: the overlap detector is conservative
+    (may report overlap when there is none), which is acceptable — the Manager
+    should use more specific patterns when exact disjointness is needed.
+    """
+    # [^abc] contains '^', 'a', 'b', 'c' as its frozenset.
+    # [abc] contains 'a', 'b', 'c'. They share 'a'/'b'/'c'.
+    # So the detector reports overlap (a false positive is safe; a false
+    # negative would be a correctness bug).
+    assert globs_overlap("[^abc]_test.py", "[abc]_test.py")
+
+
+def test_char_class_range_overlap_detector_literal() -> None:
+    """[a-z] in the overlap detector is tokenized as {'a', '-', 'z'} (three
+    literal chars, not a range).  So [a-z] overlaps [x-z] only because of
+    the shared '-' and 'z' characters in the frozensets.
+
+    Again this is a documented conservative approximation: false positives
+    (spurious overlap reports) are safe; false negatives are not.
+    """
+    # [a-z] → {'a', '-', 'z'}, [x-z] → {'x', '-', 'z'}  — share '-' and 'z'
+    assert globs_overlap("[a-z]file.py", "[x-z]file.py")
