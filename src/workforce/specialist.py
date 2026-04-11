@@ -14,7 +14,10 @@ Storage layout:
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None  # Windows — file locking not available
 import json
 import re
 import shutil
@@ -336,10 +339,13 @@ class RosterStore:
             entry = entry + "\n"
         path = self._memory_path(name)
         with path.open("a") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            if _fcntl is not None:
+                # Unix: exclusive lock so concurrent missions don't interleave.
+                _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
             try:
                 f.write(entry)
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                if _fcntl is not None:
+                    _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
 
 
