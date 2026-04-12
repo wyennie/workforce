@@ -688,3 +688,162 @@ def test_dispatch_no_owns_paths_means_no_callback(
             )
 
     assert captured["can_use_tool"] is None
+
+
+# ----- revision loop (review=True) -----------------------------------------
+
+
+from workforce import reviewer as reviewer_mod  # noqa: E402 – after fixtures
+from workforce.reviewer import Review
+
+
+def _fake_reviewer(reviews: list[Review]) -> Any:
+    """Return a coroutine replacing reviewer.run_reviewer.
+
+    Each call pops the next Review from the list (with a small cost).
+    Raises ReviewError on the last call if the list is exhausted unexpectedly.
+    """
+    call_idx = [0]
+
+    async def fake(*, worktree_path: Any, base_sha: Any, ticket: Any, **_: Any) -> tuple[Review, float]:
+        idx = call_idx[0]
+        call_idx[0] += 1
+        if idx >= len(reviews):
+            from workforce.reviewer import ReviewError
+            raise ReviewError("unexpected extra reviewer call")
+        return reviews[idx], 0.03
+
+    return fake
+
+
+def test_dispatch_review_approved_first_round(
+    project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """Reviewer approves on the first round → status COMPLETED, one review record."""
+    rs, ps, wm = stores
+    msgs = [_assistant("done"), _result(cost=0.20, turns=3, session="s1")]
+
+    with patch.object(runner_mod, "run_specialist", _mock_runner(msgs)):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            with patch.object(reviewer_mod, "run_reviewer",
+                              _fake_reviewer([Review(approved=True, summary="LGTM")])):
+                meta = asyncio.run(dispatch(
+                    project=project, specialist=specialist,
+                    ticket="t", roster_store=rs, project_store=ps,
+                    worktree_manager=wm, mission_id="m-rev-ok",
+                    review=True,
+                ))
+
+    assert meta.status is MissionStatus.COMPLETED
+    assert len(meta.reviews) == 1
+    assert meta.reviews[0].approved is True
+    assert meta.revision_rounds == 0
+
+
+def test_dispatch_review_rejected_then_approved(
+    project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """Reviewer rejects round 1, approves round 2 → COMPLETED, two review records,
+    one revision round, specialist ran twice."""
+    rs, ps, wm = stores
+    specialist_run_count = [0]
+    base_runner = _mock_runner([_assistant("done"), _result(cost=0.15, turns=3, session="s1")])
+
+    async def counting_runner(**kwargs: Any) -> Any:
+        specialist_run_count[0] += 1
+        return await base_runner(**kwargs)
+
+    with patch.object(runner_mod, "run_specialist", counting_runner):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            with patch.object(reviewer_mod, "run_reviewer", _fake_reviewer([
+                Review(approved=False, summary="needs fixes", issues=["issue A"]),
+                Review(approved=True, summary="all good"),
+            ])):
+                meta = asyncio.run(dispatch(
+                    project=project, specialist=specialist,
+                    ticket="t", roster_store=rs, project_store=ps,
+                    worktree_manager=wm, mission_id="m-rev-retry",
+                    review=True, max_revisions=3,
+                ))
+
+    assert meta.status is MissionStatus.COMPLETED
+    assert len(meta.reviews) == 2
+    assert meta.reviews[0].approved is False
+    assert meta.reviews[1].approved is True
+    assert meta.revision_rounds == 1
+    assert specialist_run_count[0] == 2
+
+
+def test_dispatch_review_exhausts_max_revisions(
+    project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """Reviewer rejects every round up to max_revisions → REVIEW_REJECTED status."""
+    rs, ps, wm = stores
+    # max_revisions=2 means: initial run + 2 re-runs = 3 specialist runs.
+    # Reviewer fires after each, so 3 reviewer calls.
+    all_rejected = [
+        Review(approved=False, summary=f"reject round {i}", issues=[f"issue {i}"])
+        for i in range(1, 4)
+    ]
+
+    with patch.object(runner_mod, "run_specialist", _mock_runner(
+        [_assistant("done"), _result(cost=0.10, turns=3, session="s1")]
+    )):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            with patch.object(reviewer_mod, "run_reviewer", _fake_reviewer(all_rejected)):
+                meta = asyncio.run(dispatch(
+                    project=project, specialist=specialist,
+                    ticket="t", roster_store=rs, project_store=ps,
+                    worktree_manager=wm, mission_id="m-rev-cap",
+                    review=True, max_revisions=2,
+                ))
+
+    assert meta.status is MissionStatus.REVIEW_REJECTED
+    # 3 reviewer calls (initial + 2 revisions)
+    assert len(meta.reviews) == 3
+    assert all(not r.approved for r in meta.reviews)
+    assert meta.revision_rounds == 2
+    assert meta.error_detail is not None
+    assert "reviewer rejected" in meta.error_detail
+
+
+def test_dispatch_review_rejected_on_wall_timeout_stays_timeout(
+    project: Project,
+    specialist: Specialist,
+    stores: tuple[RosterStore, ProjectStore, WorktreeManager],
+) -> None:
+    """If the specialist hits WALL_TIMEOUT, the Reviewer is skipped and
+    REVIEW_REJECTED must NOT be set (the status should stay WALL_TIMEOUT).
+
+    This guards the 'if run.status is RunStatus.COMPLETED' guard in the
+    revision loop.
+    """
+    rs, ps, wm = stores
+    msgs = [_assistant("ran out of time"), _result(cost=0.10, turns=5, session="s1")]
+
+    reviewer_called = [False]
+
+    async def reviewer_spy(**_: Any) -> Any:
+        reviewer_called[0] = True
+        return Review(approved=False, summary="too slow"), 0.02
+
+    with patch.object(runner_mod, "run_specialist",
+                      _mock_runner(msgs, status=RunStatus.WALL_TIMEOUT)):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            with patch.object(reviewer_mod, "run_reviewer", reviewer_spy):
+                meta = asyncio.run(dispatch(
+                    project=project, specialist=specialist,
+                    ticket="t", roster_store=rs, project_store=ps,
+                    worktree_manager=wm, mission_id="m-rev-timeout",
+                    review=True,
+                ))
+
+    assert meta.status is MissionStatus.WALL_TIMEOUT
+    assert reviewer_called[0] is False  # Reviewer skipped entirely
+    assert meta.reviews == []
