@@ -260,12 +260,12 @@ def show(project_ref: str = typer.Argument(..., help="Project name or id.", meta
                 data = _json.loads(mp.read_text())
             except (OSError, ValueError):
                 continue
-            # MissionMeta has cost_usd; ParallelMissionMeta has manager_cost_usd
-            # (sub-missions have their own dirs that we'll also walk above).
+            # Only count cost_usd (MissionMeta / sub-missions). Skip
+            # manager_cost_usd on ParallelMissionMeta parent dirs: that cost
+            # is already embedded in each sub-mission's cost_usd, so counting
+            # it here too would double the decomposition spend.
             if "cost_usd" in data:
                 total_cost += float(data["cost_usd"])
-            elif "manager_cost_usd" in data:
-                total_cost += float(data["manager_cost_usd"])
     meta.add_row("recorded missions", str(n_missions))
     meta.add_row("total cost (usd)", f"{total_cost:.4f}")
 
