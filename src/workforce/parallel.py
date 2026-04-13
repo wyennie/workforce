@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -662,7 +663,7 @@ async def _run_sub_missions(
         for meta in skips:
             mp = mission.mission_paths(project.id, meta.mission_id)
             mp.root.mkdir(parents=True, exist_ok=True)
-            mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
+            _write_meta(mp.meta, meta.model_dump_json(indent=2) + "\n")
             all_metas.append(meta)
 
         # Run runnable tasks in this wave concurrently.
@@ -680,8 +681,15 @@ async def _run_sub_missions(
     return all_metas
 
 
+def _write_meta(path: Path, content: str) -> None:
+    """Atomically write *content* to *path* via a temp file + os.replace."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _save_parent_meta(path: Path, meta: ParallelMissionMeta) -> None:
-    path.write_text(meta.model_dump_json(indent=2) + "\n")
+    _write_meta(path, meta.model_dump_json(indent=2) + "\n")
 
 
 # ----- Callback signatures (for type-only purposes) -------------------------

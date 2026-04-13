@@ -14,6 +14,7 @@ import datetime as dt
 import fcntl
 import json
 import logging
+import os
 import secrets
 import subprocess
 from dataclasses import dataclass
@@ -39,6 +40,13 @@ from workforce.utils import _FENCE_RE
 from workforce.worktree import WorktreeManager
 
 SCHEMA_VERSION = 1
+
+
+def _write_meta(path: Path, content: str) -> None:
+    """Atomically write *content* to *path* via a temp file + os.replace."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 class MissionStatus(StrEnum):
@@ -529,7 +537,7 @@ async def dispatch(
                     manager_cost_usd=manager_cost_usd,
                     turn_count=0,
                 )
-                mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
+                _write_meta(mp.meta, meta.model_dump_json(indent=2) + "\n")
                 # Update specialist stats (failure)
                 stats = roster_store.load_stats(specialist.name)
                 stats.missions_failed += 1
@@ -730,7 +738,7 @@ async def dispatch(
         reviews=review_records,
         revision_rounds=revision_rounds_used,
     )
-    mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
+    _write_meta(mp.meta, meta.model_dump_json(indent=2) + "\n")
 
     # Update specialist stats.
     stats = roster_store.load_stats(specialist.name)
