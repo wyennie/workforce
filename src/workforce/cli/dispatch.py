@@ -689,6 +689,7 @@ def _dispatch_after_manager_parallel(
                         review=review,
                         max_revisions=max_revisions,
                         base_branch=base_branch,
+                        manager_cost_usd=manager_cost,
                     )
                 )
         else:
@@ -708,6 +709,7 @@ def _dispatch_after_manager_parallel(
                     review=review,
                     max_revisions=max_revisions,
                     base_branch=base_branch,
+                    manager_cost_usd=manager_cost,
                 )
             )
     except KeyboardInterrupt:
@@ -715,10 +717,6 @@ def _dispatch_after_manager_parallel(
         raise typer.Exit(code=130) from None
     except (ValidationError, ResolutionError, WorktreeError) as e:
         output.die(str(e))
-
-    # Patch in the manager_cost we already paid (parallel.dispatch_parallel
-    # records 0 because we passed decomposition_override).
-    result.parent_meta.manager_cost_usd = manager_cost
 
     output.rule()
     _print_parallel_summary(result.parent_meta, result.sub_metas)

@@ -737,6 +737,41 @@ def test_dispatch_parallel_validation_failure(
     assert (parent_dir / "decomposition.json").is_file()
 
 
+def test_dispatch_parallel_manager_cost_usd_written_to_disk(
+    stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """manager_cost_usd passed in must appear in the on-disk meta.json.
+
+    This guards against the regression where manager_cost_usd was always 0.0
+    in the final meta.json when decomposition_override was supplied, because
+    the cost was patched in-memory after dispatch_parallel had already written
+    the file.
+    """
+    rs, ps, wm, proj = stores_and_project
+    decomp = _decomp_three_tasks()
+
+    with patch.object(runner_mod, "run_specialist", _fake_runner()):
+        with patch.object(mission, "extract_memory_delta", _no_memory):
+            result = asyncio.run(
+                dispatch_parallel(
+                    project=proj,
+                    ticket="refactor auth",
+                    roster_store=rs,
+                    project_store=ps,
+                    worktree_manager=wm,
+                    decomposition_override=decomp,
+                    parent_mission_id="m-test-cost",
+                    manager_cost_usd=0.0123,
+                )
+            )
+
+    assert result.parent_meta.manager_cost_usd == pytest.approx(0.0123)
+
+    parent_dir = mission.mission_paths(proj.id, "m-test-cost").root
+    on_disk = json.loads((parent_dir / "meta.json").read_text())
+    assert on_disk["manager_cost_usd"] == pytest.approx(0.0123)
+
+
 # ----- auto-merge ------------------------------------------------------------
 
 
