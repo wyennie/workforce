@@ -8,7 +8,10 @@ test that invokes `workforce manage --help`.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -122,3 +125,62 @@ def test_summarize_tool_file_path_picked() -> None:
 def test_summarize_tool_falls_back_to_first_arg() -> None:
     out = manage._summarize_tool("Custom", {"thing": "value"})
     assert "thing=" in out
+
+
+# ----- run_manager_chat: SDK-error-before-ResultMessage deadlock test --------
+# The fix lives in the render_loop exception handler: it calls turn_done.set()
+# so input_loop is unblocked and gather() can return. Without that fix the
+# function would hang because input_loop waits on turn_done indefinitely.
+
+
+def test_run_manager_chat_sdk_error_does_not_hang(
+    isolated_home: Path,
+    store_with_specialist: tuple[RosterStore, Specialist],
+) -> None:
+    """If the SDK raises before yielding a ResultMessage, the chat session
+    should exit cleanly (return 0) rather than hanging forever."""
+    rs, spec = store_with_specialist
+    proj = Project(
+        id="abc123def456",
+        name="test-proj",
+        repo_path="/tmp/test-proj",
+        kind="workspace",
+        assigned_specialists=[spec.name],
+    )
+
+    # Simulate the SDK raising an exception immediately — no ResultMessage ever
+    # arrives, so render_loop's turn_done.set() in the except block is the only
+    # thing that can unblock input_loop.
+    call_count = [0]
+
+    async def exploding_query(prompt: Any, options: Any) -> Any:
+        """Async generator that drains one user message from feed() then raises."""
+        async for _ in prompt:
+            break  # got one message; now simulate transport error
+        raise RuntimeError("SDK transport error")
+        yield  # unreachable — makes this an async generator
+
+    def fake_input() -> str | None:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "hello, what can you do?"
+        return None  # EOF on second call — signals clean exit
+
+    # asyncio.to_thread wraps the blocking call; replace it so fake_input runs
+    # inline in the event loop without actually spawning a thread.
+    async def fake_to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    with patch.object(manage, "query", exploding_query):
+        with patch.object(manage, "_read_user_input", fake_input):
+            with patch("workforce.terminal.open_terminal_window", return_value=False):
+                with patch("asyncio.to_thread", fake_to_thread):
+                    # 5 s should be vastly more than enough; a hang means no fix
+                    rc = asyncio.run(
+                        asyncio.wait_for(
+                            manage.run_manager_chat(proj, rs),
+                            timeout=5.0,
+                        )
+                    )
+
+    assert rc == 0

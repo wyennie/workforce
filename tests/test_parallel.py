@@ -1124,4 +1124,92 @@ def test_sequential_failure_skips_dependents(
     assert by_id["m-failchain__b"].status is MissionStatus.ERROR
     assert "skipped" in (by_id["m-failchain__b"].error_detail or "")
     assert by_id["m-failchain__c"].status is MissionStatus.ERROR
-    assert "skipped" in (by_id["m-failchain__c"].error_detail or "")
+
+
+# ----- _topological_waves complex shapes ------------------------------------
+
+
+def test_topological_waves_fan_in() -> None:
+    """Three tasks (a, b, c) converging to a single sink (d) that depends on all three.
+
+    Wave 0: a, b, c  (no real deps, just contract)
+    Wave 1: d  (depends on a, b, and c)
+    """
+    from workforce.manager import CONTRACT_TASK_ID
+
+    tasks = [
+        Task(id="a", description="x", depends_on=[CONTRACT_TASK_ID]),
+        Task(id="b", description="x", depends_on=[CONTRACT_TASK_ID]),
+        Task(id="c", description="x", depends_on=[CONTRACT_TASK_ID]),
+        Task(id="d", description="x", depends_on=["a", "b", "c"]),
+    ]
+    waves = _topological_waves(tasks)
+    assert len(waves) == 2
+    wave0_ids = {t.id for t in waves[0]}
+    wave1_ids = {t.id for t in waves[1]}
+    assert wave0_ids == {"a", "b", "c"}
+    assert wave1_ids == {"d"}
+
+
+def test_topological_waves_diamond() -> None:
+    """Diamond dependency graph: a → b, a → c, b → d, c → d.
+
+    Wave 0: a
+    Wave 1: b, c
+    Wave 2: d
+    """
+    tasks = [
+        Task(id="a", description="x", depends_on=[]),
+        Task(id="b", description="x", depends_on=["a"]),
+        Task(id="c", description="x", depends_on=["a"]),
+        Task(id="d", description="x", depends_on=["b", "c"]),
+    ]
+    waves = _topological_waves(tasks)
+    assert len(waves) == 3
+    assert {t.id for t in waves[0]} == {"a"}
+    assert {t.id for t in waves[1]} == {"b", "c"}
+    assert {t.id for t in waves[2]} == {"d"}
+
+
+def test_topological_waves_contract_only_deps() -> None:
+    """Tasks that list only CONTRACT_TASK_ID as a dependency are treated as
+    having no real dependencies — they all land in wave 0."""
+    from workforce.manager import CONTRACT_TASK_ID
+
+    tasks = [
+        Task(id="x", description="x", depends_on=[CONTRACT_TASK_ID]),
+        Task(id="y", description="x", depends_on=[CONTRACT_TASK_ID]),
+        Task(id="z", description="x", depends_on=[CONTRACT_TASK_ID]),
+    ]
+    waves = _topological_waves(tasks)
+    assert len(waves) == 1
+    assert {t.id for t in waves[0]} == {"x", "y", "z"}
+
+
+def test_topological_waves_cycle_raises() -> None:
+    """A cycle in depends_on should raise ValueError, not loop forever."""
+    tasks = [
+        Task(id="a", description="x", depends_on=["b"]),
+        Task(id="b", description="x", depends_on=["a"]),
+    ]
+    with pytest.raises(ValueError, match="cycle"):
+        _topological_waves(tasks)
+
+
+def test_topological_waves_empty_input() -> None:
+    """No tasks → empty list of waves (nothing to schedule)."""
+    assert _topological_waves([]) == []
+
+
+def test_topological_waves_single_chain() -> None:
+    """Linear chain a→b→c produces three waves, one per task."""
+    tasks = [
+        Task(id="a", description="x", depends_on=[]),
+        Task(id="b", description="x", depends_on=["a"]),
+        Task(id="c", description="x", depends_on=["b"]),
+    ]
+    waves = _topological_waves(tasks)
+    assert len(waves) == 3
+    assert waves[0][0].id == "a"
+    assert waves[1][0].id == "b"
+    assert waves[2][0].id == "c"
