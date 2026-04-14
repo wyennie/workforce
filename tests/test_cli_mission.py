@@ -4,6 +4,7 @@ import datetime as dt
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import typer
@@ -302,3 +303,146 @@ def test_mission_clean_workspace_is_noop(
     assert result.exit_code == 0, result.output
     combined = result.output or ""
     assert "workspace mission" in combined.lower() or "nothing to clean" in combined.lower()
+
+
+# ----- mission tail: polling loop -------------------------------------------
+
+# These tests exercise the seek-based position tracking and follow-mode
+# termination inside mission_tail (cli/mission.py ~lines 395-420).
+# They use a real tmp file that grows between simulated poll iterations to
+# verify that the loop reads only new content on subsequent passes.
+
+
+@pytest.fixture
+def tail_mission(
+    workspace_setup: tuple[Project, Specialist],
+) -> tuple[Project, str]:
+    """Create a bare mission directory (no events.jsonl yet) under the workspace project."""
+    proj, _spec = workspace_setup
+    mid = "m-tail-test-001"
+    mp = mission_paths(proj.id, mid)
+    mp.root.mkdir(parents=True, exist_ok=True)
+    return proj, mid
+
+
+def _assistant_event(text: str) -> str:
+    """One-line JSON AssistantMessage event whose text content renders visibly."""
+    return json.dumps({
+        "_type": "AssistantMessage",
+        "content": [{"text": text}],
+    }) + "\n"
+
+
+def test_tail_no_follow_reads_events_and_exits(
+    tail_mission: tuple[Project, str],
+) -> None:
+    """--no-follow reads all events present in events.jsonl and returns."""
+    proj, mid = tail_mission
+    mp = mission_paths(proj.id, mid)
+    mp.events.write_text(_assistant_event("hello from tail"))
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mission", "tail", mid, "--no-follow"])
+
+    assert result.exit_code == 0, result.output
+    assert "hello from tail" in result.output
+
+
+def test_tail_no_follow_handles_missing_events_file(
+    tail_mission: tuple[Project, str],
+) -> None:
+    """--no-follow does not crash when events.jsonl hasn't been written yet.
+
+    The FileNotFoundError is silently swallowed on the first (and only) pass;
+    follow=False causes an immediate return with exit_code=0.
+    """
+    proj, mid = tail_mission
+    # events.jsonl is intentionally absent — only the mission dir exists.
+    mp = mission_paths(proj.id, mid)
+    assert not mp.events.exists()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mission", "tail", mid, "--no-follow"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_tail_no_follow_ignores_malformed_json_lines(
+    tail_mission: tuple[Project, str],
+) -> None:
+    """Lines that fail JSON-decode are silently skipped."""
+    proj, mid = tail_mission
+    mp = mission_paths(proj.id, mid)
+    mp.events.write_text(
+        "not valid json\n"
+        + _assistant_event("good line")
+        + "{broken\n"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mission", "tail", mid, "--no-follow"])
+
+    assert result.exit_code == 0, result.output
+    assert "good line" in result.output
+
+
+def test_tail_seek_tracks_position_between_iterations(
+    tail_mission: tuple[Project, str],
+) -> None:
+    """The polling loop advances the file position after each pass so a
+    subsequent pass reads only newly appended content, not the full file.
+
+    Strategy: mock time.sleep so the first call appends a second event to
+    the file, and the second call raises KeyboardInterrupt to stop the loop.
+    The second event should appear exactly once in the output — if the loop
+    re-read from byte 0 it would appear twice (or the first event would
+    appear twice).
+    """
+    proj, mid = tail_mission
+    mp = mission_paths(proj.id, mid)
+    mp.events.write_text(_assistant_event("first event"))
+
+    sleep_call = 0
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call == 1:
+            # Append a second event after the first iteration has read the file.
+            with mp.events.open("a") as fh:
+                fh.write(_assistant_event("second event"))
+        else:
+            raise KeyboardInterrupt
+
+    with patch("time.sleep", side_effect=fake_sleep):
+        runner = CliRunner()
+        result = runner.invoke(app, ["mission", "tail", mid, "--poll", "0.01"])
+
+    assert result.exit_code == 0, result.output
+    assert "first event" in result.output
+    assert "second event" in result.output
+    # Seek-based tracking: each event appears exactly once.
+    assert result.output.count("first event") == 1, (
+        "first event appeared more than once — loop may be re-reading from start"
+    )
+    assert result.output.count("second event") == 1, (
+        "second event appeared more than once — loop may be re-reading from start"
+    )
+
+
+def test_tail_follow_mode_terminates_on_keyboard_interrupt(
+    tail_mission: tuple[Project, str],
+) -> None:
+    """In follow mode a KeyboardInterrupt exits cleanly (exit_code=0, no traceback)."""
+    proj, mid = tail_mission
+    mp = mission_paths(proj.id, mid)
+    mp.events.write_text(_assistant_event("line before interrupt"))
+
+    with patch("time.sleep", side_effect=KeyboardInterrupt):
+        runner = CliRunner()
+        result = runner.invoke(app, ["mission", "tail", mid, "--poll", "0.01"])
+
+    assert result.exit_code == 0, result.output
+    assert "line before interrupt" in result.output
+    # The handler prints "(stopped)" to signal clean exit.
+    assert "stopped" in result.output
