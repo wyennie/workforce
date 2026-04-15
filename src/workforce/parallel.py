@@ -63,6 +63,14 @@ class ParallelStatus(StrEnum):
 
 
 class SubMissionRef(BaseModel):
+    """Lightweight reference to one sub-mission, embedded in ParallelMissionMeta.
+
+    `status` is None while the sub-mission is still running; set to the final
+    MissionStatus once it completes. `out_of_lane_files` lists any files the
+    specialist wrote outside their declared ``owns_paths`` lane (populated by
+    the post-mission ownership audit).
+    """
+
     model_config = ConfigDict(extra="forbid")
     task_id: str
     mission_id: str
@@ -94,11 +102,25 @@ class ParallelMissionMeta(BaseModel):
 
 @dataclass
 class _ResolvedTask:
+    """Internal binding of a Task to its chosen Specialist.
+
+    Built by :func:`resolve_task_specialists` and consumed by
+    :func:`_run_sub_missions`.  ``staffing_action`` records how the specialist
+    was chosen for diagnostics / UI rendering.
+
+    Attributes:
+        task: The Manager-produced task definition.
+        specialist: The Specialist that will execute this task.
+        sub_mission_id: Pre-computed ``<parent_id>__<task_id>`` mission id.
+        staffing_action: How the specialist was resolved. One of
+            ``already_assigned``, ``auto_assigned_from_roster``,
+            ``auto_hired_from_template``, or ``fallback``.
+    """
+
     task: Task
     specialist: Specialist
     sub_mission_id: str
     staffing_action: str = "already_assigned"
-    # one of: already_assigned | auto_assigned_from_roster | auto_hired_from_template | fallback
 
 
 class ResolutionError(Exception):
@@ -243,6 +265,7 @@ def _staff_one_task(
 
 
 def _now_iso() -> str:
+    """Current UTC time as an ISO-8601 string (``YYYY-MM-DDTHH:MM:SSZ``)."""
     return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -303,6 +326,11 @@ def _materialize_contract(decomp: Decomposition, parent_dir: Path) -> Path | Non
 
 
 def _aggregate_status(sub_metas: list[MissionMeta]) -> ParallelStatus:
+    """Reduce a list of sub-mission statuses to a single ParallelStatus.
+
+    Rules: all completed → COMPLETED; some completed → PARTIAL; none → FAILED.
+    An empty list (no sub-missions ran) is treated as FAILED.
+    """
     if not sub_metas:
         return ParallelStatus.FAILED
     all_done = all(m.status is MissionStatus.COMPLETED for m in sub_metas)
@@ -316,6 +344,16 @@ def _aggregate_status(sub_metas: list[MissionMeta]) -> ParallelStatus:
 
 @dataclass
 class ParallelDispatchResult:
+    """Return value of :func:`dispatch_parallel`.
+
+    Attributes:
+        parent_meta: The top-level parallel mission metadata (written to disk).
+        decomposition: The Manager's decomposition that drove the fan-out.
+        sub_metas: One MissionMeta per sub-mission, in execution order.
+        contract_path: Path to the written contract file, or None if no
+            contract was needed.
+    """
+
     parent_meta: ParallelMissionMeta
     decomposition: Decomposition
     sub_metas: list[MissionMeta]
@@ -690,6 +728,7 @@ def _write_meta(path: Path, content: str) -> None:
 
 
 def _save_parent_meta(path: Path, meta: ParallelMissionMeta) -> None:
+    """Atomically persist a ParallelMissionMeta to disk."""
     _write_meta(path, meta.model_dump_json(indent=2) + "\n")
 
 
@@ -705,6 +744,15 @@ SubCallbackFactory = Callable[[str], EventCallback]
 
 @dataclass
 class MergeStep:
+    """One step in a post-parallel merge plan.
+
+    Attributes:
+        task_id: The Manager task id this branch belongs to.
+        branch: The ``workforce/<mission-id>`` branch to merge.
+        sub_mission_id: The sub-mission id that produced this branch.
+        status: The sub-mission's final status (used to skip failed branches).
+    """
+
     task_id: str
     branch: str
     sub_mission_id: str
@@ -713,10 +761,22 @@ class MergeStep:
 
 @dataclass
 class AutoMergeStepResult:
+    """Outcome of one step in :func:`auto_merge`.
+
+    Attributes:
+        task_id: The Manager task id for this step.
+        branch: The branch that was (or wasn't) merged.
+        success: True if the merge committed cleanly.
+        detail: Human-readable outcome: ``"merged"``, ``"conflict or merge
+            error: ..."``, ``"skipped (sub-mission status: ...)"`` etc.
+        conflicting_files: Files that caused a conflict, if any. Populated
+            before aborting the merge so the caller can surface them.
+    """
+
     task_id: str
     branch: str
     success: bool
-    detail: str   # "merged" / "conflict" / "skipped" / "aborted" / "error: ..."
+    detail: str
     conflicting_files: list[str] = field(default_factory=list)
 
 

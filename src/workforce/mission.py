@@ -62,6 +62,12 @@ class MissionStatus(StrEnum):
 
 
 class MemoryDelta(BaseModel):
+    """Structured wrap-up extracted from the agent at the end of a mission.
+
+    All three fields are short paragraphs (or empty strings). Parsed from the
+    last fenced ```json block in the memory-delta conversation turn.
+    """
+
     model_config = ConfigDict(extra="ignore")
     summary: str = ""
     project_memory: str = ""
@@ -69,6 +75,8 @@ class MemoryDelta(BaseModel):
 
 
 class CommitInfo(BaseModel):
+    """One git commit recorded in `MissionMeta.commits`."""
+
     sha: str
     subject: str
     body: str = ""
@@ -359,30 +367,43 @@ def scan_commits(worktree_path: Path, base_sha: str) -> list[CommitInfo]:
 
 @dataclass(frozen=True)
 class MissionPaths:
+    """Typed accessors for the per-mission artifact directory.
+
+    All files live under ``<projects_root>/<project_id>/missions/<mission_id>/``.
+    Callers use the properties rather than constructing paths by hand so a
+    future layout change is one edit here, not many at call sites.
+    """
+
     root: Path
 
     @property
     def ticket(self) -> Path:
+        """ticket.md — verbatim ticket text written at dispatch time."""
         return self.root / "ticket.md"
 
     @property
     def events(self) -> Path:
+        """events.jsonl — JSONL stream of every SDK message, one per line."""
         return self.root / "events.jsonl"
 
     @property
     def result(self) -> Path:
+        """result.md — final assistant summary (or memory-delta summary)."""
         return self.root / "result.md"
 
     @property
     def transcript(self) -> Path:
+        """transcript.md — human-readable assistant turns only."""
         return self.root / "transcript.md"
 
     @property
     def meta(self) -> Path:
+        """meta.json — serialized MissionMeta written at mission end."""
         return self.root / "meta.json"
 
 
 def mission_paths(project_id: str, mission_id: str) -> MissionPaths:
+    """Return the MissionPaths bundle for a given project/mission pair."""
     return MissionPaths(
         root=paths.project_dir(project_id) / "missions" / mission_id
     )
@@ -407,6 +428,12 @@ def render_transcript(messages: list[Any]) -> str:
 
 
 def last_assistant_text(messages: list[Any]) -> str:
+    """Return the last non-empty TextBlock text from assistant messages.
+
+    Scans in reverse so the most-recent assistant turn wins. Returns an empty
+    string if no assistant text was found (e.g. the session timed out before
+    any response).
+    """
     for msg in reversed(messages):
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
@@ -419,6 +446,7 @@ def last_assistant_text(messages: list[Any]) -> str:
 
 
 def _now_iso() -> str:
+    """Current UTC time as an ISO-8601 string (``YYYY-MM-DDTHH:MM:SSZ``)."""
     return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -756,10 +784,16 @@ async def dispatch(
 
 
 def _format_memory_entry(mission_id: str, text: str) -> str:
+    """Wrap a memory paragraph in a mission-id heading for append-only storage."""
     return f"## {mission_id}\n\n{text.strip()}"
 
 
 def _append_project_memory(path: Path, entry: str) -> None:
+    """Append one memory entry to the per-project memory file for a specialist.
+
+    Creates the directory if needed. Uses an exclusive file lock so concurrent
+    missions writing the same file don't interleave their entries.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if not entry.endswith("\n"):
         entry = entry + "\n"
