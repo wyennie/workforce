@@ -38,7 +38,11 @@ NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\- ]{0,63}$")
 
 
 class ProjectError(Exception):
-    """Raised for project store errors that have a clear user-facing message."""
+    """Raised for project store errors that have a clear user-facing message.
+
+    Always shown directly to the user via ``output.die``; do not include
+    internal tracebacks or raw OS error text.
+    """
 
 
 # ----- ID resolution --------------------------------------------------------
@@ -51,10 +55,19 @@ def compute_project_id(repo_path: Path) -> str:
 
 
 def marker_path(repo_path: Path) -> Path:
+    """Return the path of the ``MARKER_FILENAME`` file inside ``repo_path``."""
     return repo_path / MARKER_FILENAME
 
 
 def read_marker(repo_path: Path) -> str | None:
+    """Read the project-id marker from inside the repo, if present.
+
+    Returns:
+        The 12-hex project id, or None if no marker file exists.
+
+    Raises:
+        ProjectError: If the marker file exists but contains an invalid id.
+    """
     m = marker_path(repo_path)
     if not m.is_file():
         return None
@@ -67,6 +80,11 @@ def read_marker(repo_path: Path) -> str | None:
 
 
 def write_marker(repo_path: Path, project_id: str) -> None:
+    """Write a project-id marker file into the repo root.
+
+    Raises:
+        ValueError: If ``project_id`` doesn't match the expected hex format.
+    """
     if not ID_PATTERN.match(project_id):
         raise ValueError(f"invalid project id: {project_id!r}")
     marker_path(repo_path).write_text(project_id + "\n")
@@ -146,15 +164,19 @@ class ProjectStore:
         return self._dir(project_id) / "project.toml"
 
     def memory_dir(self, project_id: str) -> Path:
+        """Return the per-specialist memory directory for this project."""
         return self._dir(project_id) / "memory"
 
     def missions_dir(self, project_id: str) -> Path:
+        """Return the missions artifact directory for this project."""
         return self._dir(project_id) / "missions"
 
     def exists(self, project_id: str) -> bool:
+        """Return True if a ``project.toml`` file exists for ``project_id``."""
         return self._path(project_id).is_file()
 
     def ids(self) -> list[str]:
+        """Return sorted list of all registered project ids."""
         if not self.root.is_dir():
             return []
         return sorted(
@@ -163,9 +185,15 @@ class ProjectStore:
         )
 
     def list(self) -> list[Project]:
+        """Return all registered projects, sorted by id."""
         return [self.load_by_id(i) for i in self.ids()]
 
     def load_by_id(self, project_id: str) -> Project:
+        """Load a Project by its 12-hex id.
+
+        Raises:
+            ProjectError: If no project with that id is registered.
+        """
         path = self._path(project_id)
         if not path.is_file():
             raise ProjectError(f"no such project id: {project_id!r}")
@@ -174,6 +202,13 @@ class ProjectStore:
         return Project.model_validate(data)
 
     def find_by_name(self, name: str) -> Project:
+        """Find a project by display name (case-insensitive).
+
+        Raises:
+            ProjectError: If no project has that name, or if multiple projects
+                share the same name (name uniqueness is enforced at save time
+                but can drift if the store is edited manually).
+        """
         matches = [p for p in self.list() if p.name.lower() == name.lower()]
         if not matches:
             raise ProjectError(f"no project named {name!r}")
@@ -191,6 +226,21 @@ class ProjectStore:
         return self.find_by_name(ref)
 
     def save(self, project: Project, *, overwrite: bool = False) -> None:
+        """Persist a Project to ``project.toml``.
+
+        Creates the project directory, memory dir, and missions dir if absent.
+        When ``overwrite=False`` (default), rejects duplicate ids and duplicate
+        display names.
+
+        Args:
+            project: The Project to save.
+            overwrite: If True, update an existing project in place (skips
+                name-uniqueness check).
+
+        Raises:
+            ProjectError: If the id or display name already exists and
+                ``overwrite`` is False.
+        """
         if self.exists(project.id) and not overwrite:
             raise ProjectError(f"project {project.id!r} is already registered")
         if not overwrite:
@@ -210,6 +260,13 @@ class ProjectStore:
         )
 
     def delete(self, project_id: str) -> None:
+        """Remove a project's entire data directory (missions, memory, TOML).
+
+        Does not touch the source repo or its marker file.
+
+        Raises:
+            ProjectError: If the project id isn't registered.
+        """
         if not self.exists(project_id):
             raise ProjectError(f"no such project id: {project_id!r}")
         shutil.rmtree(self._dir(project_id))

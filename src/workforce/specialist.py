@@ -82,6 +82,14 @@ Commits are authored as the repo's user (do not override `user.name` or
 
 @dataclass(frozen=True)
 class Template:
+    """Seed values for a new specialist hired from a template.
+
+    Attributes:
+        role: One-line role description baked into the specialist file.
+        base_prompt: Full base_prompt that follows ``common_preamble``.
+        allowed_tools: Tool names the specialist may invoke.
+    """
+
     role: str
     base_prompt: str
     allowed_tools: list[str]
@@ -194,6 +202,22 @@ class Specialist(BaseModel):
         role: str | None = None,
         model: str | None = None,
     ) -> Specialist:
+        """Create a Specialist seeded from a built-in template.
+
+        Args:
+            name: Unique name for the new specialist (must match
+                ``NAME_PATTERN``).
+            template_name: Key in :data:`TEMPLATES` (e.g. ``"backend"``).
+            role: Override for the template's default role description.
+            model: Claude model id; defaults to :data:`DEFAULT_MODEL`.
+
+        Returns:
+            A fully initialized Specialist with the template's base_prompt
+            prepended with :func:`common_preamble`.
+
+        Raises:
+            ValueError: If ``template_name`` isn't in :data:`TEMPLATES`.
+        """
         if template_name not in TEMPLATES:
             raise ValueError(
                 f"unknown template '{template_name}'; available: "
@@ -217,6 +241,20 @@ class Specialist(BaseModel):
         model: str | None = None,
         allowed_tools: list[str] | None = None,
     ) -> Specialist:
+        """Create a Specialist with a hand-written role (no template).
+
+        The base_prompt is ``common_preamble`` + ``## Role\\n\\n<role>``.
+        ``allowed_tools`` defaults to :data:`ALL_DEV_TOOLS` if omitted.
+
+        Args:
+            name: Unique specialist name.
+            role: Free-text role description.
+            model: Claude model id; defaults to :data:`DEFAULT_MODEL`.
+            allowed_tools: Explicit tool list, or None to use ALL_DEV_TOOLS.
+
+        Returns:
+            A fully initialized Specialist.
+        """
         return cls(
             name=name,
             role=role,
@@ -227,6 +265,13 @@ class Specialist(BaseModel):
 
 
 class SpecialistStats(BaseModel):
+    """Cumulative performance counters for one specialist, written to stats.json.
+
+    Updated at the end of every mission (including failures and partial
+    parallel runs). Provides a lightweight operational dashboard without
+    scanning all mission meta files.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     schema_version: int = SCHEMA_VERSION
@@ -263,9 +308,11 @@ class RosterStore:
         return self._dir(name) / "memory.md"
 
     def exists(self, name: str) -> bool:
+        """Return True if ``<roster_root>/<name>/specialist.toml`` is a file."""
         return self._spec_path(name).is_file()
 
     def names(self) -> list[str]:
+        """Return sorted list of all specialist names in the roster."""
         if not self.root.is_dir():
             return []
         return sorted(
@@ -274,9 +321,15 @@ class RosterStore:
         )
 
     def list(self) -> list[Specialist]:
+        """Return all specialists in the roster, sorted by name."""
         return [self.load(n) for n in self.names()]
 
     def load(self, name: str) -> Specialist:
+        """Load and validate a Specialist from its TOML file.
+
+        Raises:
+            RosterError: If the specialist doesn't exist.
+        """
         path = self._spec_path(name)
         if not path.is_file():
             raise RosterError(f"no such specialist: {name!r}")
@@ -285,6 +338,18 @@ class RosterStore:
         return Specialist.model_validate(data)
 
     def save(self, spec: Specialist, *, overwrite: bool = False) -> None:
+        """Persist a Specialist to ``specialist.toml``.
+
+        Initializes empty ``stats.json`` and ``memory.md`` if they're absent
+        (never overwrites existing stats/memory).
+
+        Args:
+            spec: The Specialist to save.
+            overwrite: When False (default), raises if the name exists.
+
+        Raises:
+            RosterError: If the specialist already exists and overwrite is False.
+        """
         if self.exists(spec.name) and not overwrite:
             raise RosterError(f"specialist {spec.name!r} already exists")
         d = self._dir(spec.name)
@@ -299,27 +364,46 @@ class RosterStore:
             self._memory_path(spec.name).write_text("")
 
     def delete(self, name: str) -> None:
+        """Remove a specialist's entire directory (including memory and stats).
+
+        Raises:
+            RosterError: If the specialist doesn't exist.
+        """
         if not self.exists(name):
             raise RosterError(f"no such specialist: {name!r}")
         shutil.rmtree(self._dir(name))
 
     def load_stats(self, name: str) -> SpecialistStats:
+        """Load stats for ``name``, returning a fresh SpecialistStats if absent."""
         path = self._stats_path(name)
         if not path.is_file():
             return SpecialistStats()
         return SpecialistStats.model_validate_json(path.read_text())
 
     def save_stats(self, name: str, stats: SpecialistStats) -> None:
+        """Persist updated stats for ``name``.
+
+        Raises:
+            RosterError: If the specialist doesn't exist.
+        """
         if not self.exists(name):
             raise RosterError(f"no such specialist: {name!r}")
         self._write_stats(name, stats)
 
     def _write_stats(self, name: str, stats: SpecialistStats) -> None:
+        """Write stats to disk (no existence check — internal use only)."""
         self._stats_path(name).write_text(
             json.dumps(stats.model_dump(), indent=2) + "\n"
         )
 
     def load_memory(self, name: str) -> str:
+        """Return the full cross-project memory text for ``name``.
+
+        Returns an empty string if the memory file doesn't exist yet.
+
+        Raises:
+            RosterError: If the specialist doesn't exist.
+        """
         if not self.exists(name):
             raise RosterError(f"no such specialist: {name!r}")
         path = self._memory_path(name)
