@@ -26,15 +26,29 @@ MISSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
 
 
 class WorktreeError(Exception):
-    """Worktree operation failed; message is user-facing."""
+    """Worktree operation failed; message is user-facing.
+
+    Raised by :class:`WorktreeManager` and the standalone git helpers.
+    Always displayed directly to the user via ``output.die``; do not embed
+    technical details that aren't meaningful without code context.
+    """
 
 
 class RepoNotCleanError(WorktreeError):
-    """Source repo has staged/modified changes (untracked files are tolerated)."""
+    """Source repo has staged/modified changes (untracked files are tolerated).
+
+    Raised during worktree creation to prevent forking from a dirty tree,
+    which would leave the specialist with an ambiguous starting state.
+    """
 
 
 class BranchExistsError(WorktreeError):
-    """A branch with the target name already exists in the source repo."""
+    """A branch with the target name already exists in the source repo.
+
+    Each mission must use a unique branch name; this error signals an id
+    collision (extremely unlikely but possible if the clock has low resolution
+    or a mission is retried with the same id).
+    """
 
 
 class UnbornRepoError(WorktreeError):
@@ -149,11 +163,22 @@ def find_workforce_branches(repo_path: Path, *, merged_into: str | None = None) 
 
 @dataclass(frozen=True)
 class WorktreeRef:
+    """Result of a successful :meth:`WorktreeManager.create` call.
+
+    Attributes:
+        repo_path: Path to the source repository.
+        worktree_path: Path to the newly created worktree directory.
+        branch: Full branch name (``workforce/<mission-id>``).
+        mission_id: The mission id used to name the branch and directory.
+        base_sha: The commit SHA the worktree was forked from; used by
+            :func:`scan_commits` to diff which commits the specialist added.
+    """
+
     repo_path: Path
     worktree_path: Path
     branch: str
     mission_id: str
-    base_sha: str   # commit the worktree was forked from; used to diff new commits
+    base_sha: str
 
 
 @dataclass(frozen=True)

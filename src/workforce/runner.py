@@ -36,6 +36,8 @@ class RunLimits:
 
 
 class RunStatus(StrEnum):
+    """Terminal state of a specialist run."""
+
     COMPLETED = "completed"     # ResultMessage arrived, is_error == False
     ERROR = "error"             # SDK reported an error or no ResultMessage
     WALL_TIMEOUT = "wall_timeout"
@@ -44,6 +46,20 @@ class RunStatus(StrEnum):
 
 @dataclass
 class RunResult:
+    """Everything the orchestrator needs to know about a completed run.
+
+    Attributes:
+        status: Final state of the run.
+        final: The SDK's ResultMessage, if one was received before the run
+            ended (None on timeout or SDK crash before the SDK could send it).
+        cost_usd: Total API cost in USD from the ResultMessage, or 0.0 if
+            the run ended without one.
+        duration_seconds: Wall-clock time from start to end.
+        turn_count: Number of assistant turns from the ResultMessage.
+        error_detail: Human-readable description of the failure, or None
+            when status is COMPLETED.
+    """
+
     status: RunStatus
     final: ResultMessage | None
     cost_usd: float
@@ -52,6 +68,9 @@ class RunResult:
     error_detail: str | None = None
 
 
+#: Callback invoked with each SDK message as it streams in. Used by the CLI
+#: to render live output and by the orchestrator to collect messages for the
+#: transcript.
 EventCallback = Callable[[Any], None]
 
 
@@ -200,6 +219,8 @@ async def _single_message_stream(text: str) -> AsyncIterator[dict[str, Any]]:
 
 @dataclass
 class _RunState:
+    """Mutable accumulator for the single ResultMessage from an SDK session."""
+
     final: ResultMessage | None = None
 
 
@@ -209,6 +230,7 @@ def _make_result(
     status: RunStatus,
     detail: str | None,
 ) -> RunResult:
+    """Build a RunResult from accumulated state and a final status."""
     final = state.final
     return RunResult(
         status=status,
