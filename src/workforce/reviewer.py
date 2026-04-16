@@ -55,7 +55,7 @@ class Review(BaseModel):
 
 
 class ReviewError(Exception):
-    """Reviewer output couldn't be parsed into a Review."""
+    """Reviewer output couldn't be parsed into a Review, or the session timed out."""
 
 
 # ----- Reviewer prompt ------------------------------------------------------
@@ -133,6 +133,12 @@ def _user_prompt(
     contract: str | None,
     prior_reviews: list[Review],
 ) -> str:
+    """Build the Reviewer's user-turn prompt.
+
+    Includes the ticket, the base commit SHA the specialist branched from,
+    the contract (if any), and a summary of prior review rounds so the
+    Reviewer can check whether earlier issues were addressed.
+    """
     parts: list[str] = [
         f"## Ticket\n\n{ticket.strip()}",
         f"## Base commit\n\n`{base_sha}` — diff this against HEAD to see what was added.",
@@ -244,6 +250,7 @@ async def run_reviewer(
 
 
 def _last_assistant_text(messages: list[Any]) -> str:
+    """Return the last non-empty assistant text from collected messages."""
     for msg in reversed(messages):
         if isinstance(msg, AssistantMessage):
             chunks = [b.text for b in msg.content if isinstance(b, TextBlock)]

@@ -45,12 +45,21 @@ MANAGER_ALLOWED_TOOLS = ["Read", "Glob", "Grep"]
 
 
 class DecompositionKind(StrEnum):
+    """How the Manager chose to decompose the ticket."""
+
     PARALLEL = "parallel"
     SEQUENTIAL = "sequential"
     SINGLE = "single"
 
 
 class Contract(BaseModel):
+    """API contract the Manager writes for parallel sub-missions to agree on.
+
+    When ``needed=True``, ``body`` contains the markdown contract text.
+    ``path`` is the intended storage location (for reference; the parallel
+    orchestrator materializes the contract under the parent mission dir).
+    """
+
     model_config = ConfigDict(extra="forbid")
     needed: bool = False
     path: str = ""           # relative path under _workforce/contracts/
@@ -58,6 +67,24 @@ class Contract(BaseModel):
 
 
 class Task(BaseModel):
+    """One unit of work in a Decomposition, assigned to a single specialist.
+
+    Attributes:
+        id: Short slug used in mission ids and merge order references.
+        description: Full instructions for the specialist (must be
+            self-contained — the specialist won't see the other tasks).
+        owns_paths: Glob patterns declaring which files this task may write.
+        excludes_paths: Globs carved out of ``owns_paths`` (this task must
+            not write these even if they match an ``owns_paths`` pattern).
+        depends_on: Task ids that must complete before this task starts, plus
+            the synthetic ``"contract"`` sentinel meaning "after the contract
+            is written."
+        suggested_specialist: Name of the specialist to run this task.
+        template_hint: Template to hire from if ``suggested_specialist``
+            doesn't exist in the roster and auto-staff is enabled.
+        estimated_turns: Rough turn-count hint for UI display; not enforced.
+    """
+
     model_config = ConfigDict(extra="forbid")
     id: str
     description: str
@@ -80,6 +107,23 @@ class Task(BaseModel):
 
 
 class Decomposition(BaseModel):
+    """The Manager's structured plan for executing a ticket.
+
+    Produced by :func:`run_manager` and validated by
+    :func:`validate_decomposition` before any sub-missions are started.
+
+    Attributes:
+        schema_version: Forward-compat version tag.
+        ticket: The original ticket text (echoed for self-contained records).
+        kind: How the work is split — parallel, sequential, or single.
+        rationale: One-sentence explanation of why this kind was chosen.
+        contract: API contract for parallel decompositions; ``needed=False``
+            for single/sequential.
+        tasks: The list of tasks in dependency order.
+        merge_order: Task ids in the order they should be merged into the
+            source branch.
+    """
+
     model_config = ConfigDict(extra="forbid")
     schema_version: int = SCHEMA_VERSION
     ticket: str
@@ -244,6 +288,12 @@ def _user_prompt(
     prior_decomposition: Decomposition | None = None,
     user_feedback: str | None = None,
 ) -> str:
+    """Build the Manager's user-turn prompt.
+
+    Includes the ticket, a listing of assigned specialists, and (for
+    replanning) the prior decomposition + user feedback so the Manager
+    can revise its plan rather than starting from scratch.
+    """
     if project_specialists:
         lines = []
         for s in project_specialists:
