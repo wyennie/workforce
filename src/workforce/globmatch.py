@@ -98,6 +98,7 @@ def globs_overlap(pattern_a: str, pattern_b: str) -> bool:
 
 @lru_cache(maxsize=4096)
 def _segs_overlap(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+    """Recursive NFA-style check: do path-segment sequences *a* and *b* overlap?"""
     if not a and not b:
         return True
     if not a:
@@ -135,6 +136,7 @@ def _segs_overlap(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
 
 
 def _tokenize_component(part: str) -> tuple[_Token, ...]:
+    """Tokenize a single path component (no slashes) into a token sequence."""
     out: list[_Token] = []
     i = 0
     n = len(part)
@@ -162,11 +164,13 @@ def _tokenize_component(part: str) -> tuple[_Token, ...]:
 
 
 def _component_overlap(a: str, b: str) -> bool:
+    """True iff two single-component patterns can match the same string."""
     return _tokens_overlap(_tokenize_component(a), _tokenize_component(b))
 
 
 @lru_cache(maxsize=4096)
 def _tokens_overlap(a: tuple[_Token, ...], b: tuple[_Token, ...]) -> bool:
+    """Recursive NFA-style check: do token sequences *a* and *b* overlap?"""
     if not a and not b:
         return True
     if not a:
