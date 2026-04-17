@@ -829,7 +829,10 @@ def _confirm_decomposition(
 
 
 def _make_sub_renderer(task_id: str) -> Any:
-    """Per-sub-mission renderer that prefixes lines with [task_id]."""
+    """Return an ``on_message`` callback that prefixes every output line with ``[task_id]``.
+
+    Used in non-panels parallel mode so the interleaved stream remains readable.
+    """
     prefix = f"\\[[bold cyan]{task_id}[/bold cyan]] "
 
     def render(msg: Any) -> None:
@@ -860,6 +863,7 @@ def _make_sub_renderer(task_id: str) -> Any:
 
 
 def _print_parallel_summary(parent: ParallelMissionMeta, subs: list[MissionMeta]) -> None:
+    """Print the per-task status table and total cost for a parallel mission."""
     output.info(
         f"parent mission {parent.parent_mission_id}: "
         f"{_PARALLEL_STATUS_STYLES[parent.status]}"
@@ -897,6 +901,7 @@ def _print_parallel_summary(parent: ParallelMissionMeta, subs: list[MissionMeta]
 
 
 def _print_summary(meta: mission.MissionMeta) -> None:
+    """Print a single-mission status block (branch, cost, turns, review verdict)."""
     output.info(f"mission {meta.mission_id}: {_STATUS_STYLES[meta.status]}")
     if meta.branch is None:
         # Workspace mission — no branch, no commits, just a working dir.

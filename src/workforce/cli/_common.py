@@ -29,6 +29,7 @@ from workforce.worktree import WorktreeManager
 
 
 def _stores() -> tuple[RosterStore, project_mod.ProjectStore, WorktreeManager]:
+    """Ensure the on-disk layout and return the three main data-access objects."""
     paths.ensure_layout()
     return RosterStore(), project_mod.ProjectStore(), WorktreeManager()
 
@@ -69,6 +70,7 @@ def _resolve_specialist(
 
 
 def _truncate(s: str, n: int) -> str:
+    """Truncate *s* to at most *n* characters (appending … when clipped)."""
     s = s.strip()
     return s if len(s) <= n else s[: n - 1] + "…"
 
@@ -143,7 +145,10 @@ _PARALLEL_STATUS_STYLES = {
 def _load_any_meta(
     project_id: str, mission_id: str
 ) -> MissionMeta | ParallelMissionMeta | None:
-    """Load either a single-mission meta or a parent (parallel) meta."""
+    """Load either a single-mission meta or a parent parallel meta from disk.
+
+    Returns None if the meta.json file is absent or unparseable.
+    """
     mp = mission.mission_paths(project_id, mission_id)
     if not mp.meta.is_file():
         return None
@@ -198,7 +203,7 @@ def _find_mission_dir(
 def _list_project_missions(
     project_id: str,
 ) -> list[MissionMeta | ParallelMissionMeta]:
-    """Return all mission metas (singles, parents, subs) for a project."""
+    """Return all parseable mission metas for a project, sorted by id (oldest first)."""
     missions_dir = paths.project_dir(project_id) / "missions"
     if not missions_dir.is_dir():
         return []
