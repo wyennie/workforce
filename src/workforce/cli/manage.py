@@ -124,6 +124,12 @@ def _build_manager_prompt(
     *,
     branch: str | None = None,
 ) -> str:
+    """Render the Manager system prompt for *project*.
+
+    Injects project metadata, the specialist roster, and (when supplied)
+    staging-branch dispatch rules so the Manager always knows the constraints
+    it must operate under.
+    """
     assigned = (
         ", ".join(project.assigned_specialists)
         if project.assigned_specialists else "(none yet — hire and assign one first)"
@@ -258,6 +264,7 @@ def _render_message(msg: Any) -> None:
 
 
 def _summarize_tool(name: str, args: dict[str, Any]) -> str:
+    """Return a compact one-line preview of a tool call for the chat display."""
     if name == "Bash":
         cmd = str(args.get("command", ""))
         return cmd if len(cmd) <= 80 else cmd[:77] + "..."

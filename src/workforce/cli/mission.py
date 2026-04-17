@@ -177,6 +177,7 @@ def render_labeled_event(label: str, evt: dict[str, Any], *, show_thinking: bool
 
 
 def _render_replay_event(evt: dict[str, Any], *, show_thinking: bool) -> None:
+    """Render a single deserialized event line to the terminal during replay."""
     t = evt.get("_type")
     if t == "AssistantMessage":
         for block in evt.get("content") or []:
@@ -223,6 +224,7 @@ def mission_show(mission_id: str = typer.Argument(..., help="Mission id.")) -> N
 
 
 def _show_single_meta(proj: project_mod.Project, meta: MissionMeta) -> None:
+    """Render the detail view for a single (non-parallel) mission."""
     mp = mission.mission_paths(proj.id, meta.mission_id)
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold")
