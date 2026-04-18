@@ -20,22 +20,27 @@ def home() -> Path:
 
 
 def config_path() -> Path:
+    """Return the path to the global Workforce config file (may not exist yet)."""
     return home() / "config.toml"
 
 
 def roster_dir() -> Path:
+    """Return the directory that stores all specialist subdirectories."""
     return home() / "roster"
 
 
 def specialist_dir(name: str) -> Path:
+    """Return the directory for a single named specialist."""
     return roster_dir() / name
 
 
 def projects_dir() -> Path:
+    """Return the directory that stores all project subdirectories."""
     return home() / "projects"
 
 
 def project_dir(project_id: str) -> Path:
+    """Return the directory for a specific project by its id."""
     return projects_dir() / project_id
 
 

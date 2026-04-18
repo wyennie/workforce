@@ -38,6 +38,7 @@ _Factory = Callable[[str, list[str], Path | None], list[str]]
 
 
 def _ghostty(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a Ghostty argv that opens a new window running *cmd*."""
     # Ghostty uses `-e <command>` to run a command in a new window. Title
     # isn't exposed as a CLI flag; the window picks its own.
     out = ["ghostty"]
@@ -47,6 +48,7 @@ def _ghostty(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _ptyxis(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a Ptyxis argv that opens a new window running *cmd*."""
     out = ["ptyxis", "--new-window", "-T", title]
     if cwd is not None:
         out += ["-d", str(cwd)]
@@ -54,6 +56,7 @@ def _ptyxis(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _kitty(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a kitty argv that opens a new window running *cmd*."""
     out = ["kitty", "-T", title]
     if cwd is not None:
         out += ["--directory", str(cwd)]
@@ -61,6 +64,7 @@ def _kitty(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _alacritty(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build an Alacritty argv that opens a new window running *cmd*."""
     out = ["alacritty", "--title", title]
     if cwd is not None:
         out += ["--working-directory", str(cwd)]
@@ -68,6 +72,7 @@ def _alacritty(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _wezterm(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a WezTerm argv that opens a new window running *cmd*."""
     out = ["wezterm", "start"]
     if cwd is not None:
         out += ["--cwd", str(cwd)]
@@ -75,6 +80,7 @@ def _wezterm(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _foot(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a foot argv that opens a new window running *cmd*."""
     out = ["foot", "-T", title]
     if cwd is not None:
         out += ["--working-directory", str(cwd)]
@@ -82,6 +88,7 @@ def _foot(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _kgx(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a GNOME Console (kgx) argv that opens a new window running *cmd*."""
     # GNOME Console; -e takes a single command string.
     cmd_str = " ".join(shlex.quote(a) for a in cmd)
     out = ["kgx", "-T", title]
@@ -91,6 +98,7 @@ def _kgx(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _gnome_terminal(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a gnome-terminal argv that opens a new window running *cmd*."""
     out = ["gnome-terminal", f"--title={title}"]
     if cwd is not None:
         out += [f"--working-directory={cwd}"]
@@ -98,6 +106,7 @@ def _gnome_terminal(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _konsole(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a Konsole argv that opens a new window running *cmd*."""
     out = ["konsole", "-p", f"tabtitle={title}"]
     if cwd is not None:
         out += ["--workdir", str(cwd)]
@@ -105,6 +114,7 @@ def _konsole(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _xfce4_terminal(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build an xfce4-terminal argv that opens a new window running *cmd*."""
     cmd_str = " ".join(shlex.quote(a) for a in cmd)
     out = ["xfce4-terminal", f"--title={title}"]
     if cwd is not None:
@@ -113,6 +123,7 @@ def _xfce4_terminal(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _tilix(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a Tilix argv that opens a new window running *cmd*."""
     cmd_str = " ".join(shlex.quote(a) for a in cmd)
     out = ["tilix", "--title", title]
     if cwd is not None:
@@ -121,6 +132,7 @@ def _tilix(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _terminator(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a Terminator argv that opens a new window running *cmd*."""
     cmd_str = " ".join(shlex.quote(a) for a in cmd)
     out = ["terminator", "-T", title]
     if cwd is not None:
@@ -129,6 +141,7 @@ def _terminator(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _urxvt(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build a urxvt argv that opens a new window running *cmd*."""
     out = ["urxvt", "-title", title]
     if cwd is not None:
         out += ["-cd", str(cwd)]
@@ -136,6 +149,7 @@ def _urxvt(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
 
 
 def _xterm(title: str, cmd: list[str], cwd: Path | None) -> list[str]:
+    """Build an xterm argv that opens a new window running *cmd*."""
     # xterm has no built-in cwd flag — wrap in `bash -c "cd ...; exec ..."`.
     if cwd is not None:
         cmd_str = (
@@ -293,10 +307,16 @@ def _ancestor_terminal_from_proc() -> str | None:
 
 
 def _has_display() -> bool:
+    """Return True if a graphical display server appears to be available."""
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def _spawn_linux(title: str, cmd: list[str], cwd: Path | None) -> bool:
+    """Try each candidate terminal emulator in priority order on Linux.
+
+    Returns True on the first successful ``Popen``, False if none could be
+    spawned (no display, no installed emulator).
+    """
     if not _has_display():
         return False
 
@@ -373,6 +393,10 @@ def _ansi_c_quote(s: str) -> str:
 
 
 def _spawn_macos(title: str, cmd: list[str], cwd: Path | None) -> bool:
+    """Open a new Terminal.app window running *cmd* via AppleScript.
+
+    Returns True on success, False if ``osascript`` fails or isn't found.
+    """
     # AppleScript: open a new Terminal window and run the command.
     # Use ANSI-C $'...' quoting (not shlex.quote) so the result contains no
     # double-quote characters that would be mangled by the AppleScript string
@@ -406,6 +430,10 @@ def _spawn_macos(title: str, cmd: list[str], cwd: Path | None) -> bool:
 
 
 def _spawn_windows(title: str, cmd: list[str], cwd: Path | None) -> bool:
+    """Open a new Windows console window running *cmd* via ``start``.
+
+    Returns True on success, False on ``OSError``.
+    """
     # `start "title" cmd /k <command>` opens a new console; /k keeps it open.
     # subprocess.list2cmdline applies Windows cmd.exe double-quote escaping.
     # shlex.quote would produce POSIX single-quotes, which cmd.exe does not

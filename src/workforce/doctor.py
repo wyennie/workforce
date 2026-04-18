@@ -18,6 +18,8 @@ from workforce import paths
 
 
 class Status(StrEnum):
+    """Result severity for a single pre-flight check."""
+
     OK = "ok"
     WARN = "warn"
     FAIL = "fail"
@@ -25,6 +27,14 @@ class Status(StrEnum):
 
 @dataclass(frozen=True)
 class Check:
+    """Outcome of one pre-flight check.
+
+    Attributes:
+        name: Human-readable check name (e.g. ``"python"``, ``"git"``).
+        status: Severity of the outcome.
+        detail: One-line explanation or version string shown in the report.
+    """
+
     name: str
     status: Status
     detail: str
@@ -34,6 +44,7 @@ MIN_PYTHON = (3, 11)
 
 
 def check_python() -> Check:
+    """Verify the interpreter version meets the minimum requirement."""
     v = sys.version_info
     if (v.major, v.minor) < MIN_PYTHON:
         return Check(
@@ -45,6 +56,7 @@ def check_python() -> Check:
 
 
 def check_sdk() -> Check:
+    """Verify that the ``claude_agent_sdk`` package is importable."""
     try:
         importlib.import_module("claude_agent_sdk")
     except ImportError as e:
@@ -77,6 +89,7 @@ def check_claude_cli() -> Check:
 
 
 def check_git() -> Check:
+    """Verify that ``git`` is installed and callable."""
     binary = shutil.which("git")
     if binary is None:
         return Check("git", Status.FAIL, "binary not found on PATH")
@@ -124,6 +137,7 @@ def check_home() -> Check:
 
 
 def run_all() -> list[Check]:
+    """Run every pre-flight check and return the results in order."""
     return [
         check_python(),
         check_sdk(),
@@ -135,6 +149,10 @@ def run_all() -> list[Check]:
 
 
 def worst(checks: list[Check]) -> Status:
+    """Return the most severe status across a list of checks.
+
+    ``FAIL`` beats ``WARN`` beats ``OK``.
+    """
     if any(c.status is Status.FAIL for c in checks):
         return Status.FAIL
     if any(c.status is Status.WARN for c in checks):
