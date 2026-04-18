@@ -31,11 +31,13 @@ sub = typer.Typer(
 
 
 def _project_store() -> project.ProjectStore:
+    """Ensure the Workforce data layout exists and return a ProjectStore."""
     paths.ensure_layout()
     return project.ProjectStore()
 
 
 def _roster_store() -> RosterStore:
+    """Ensure the Workforce data layout exists and return a RosterStore."""
     paths.ensure_layout()
     return RosterStore()
 
