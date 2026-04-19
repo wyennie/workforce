@@ -96,6 +96,15 @@ class PanelDisplay:
         max_lines_per_panel: int = _DEFAULT_LINES_PER_PANEL,
         console: Console | None = None,
     ) -> None:
+        """Initialize a PanelDisplay for the given workers.
+
+        Args:
+            task_ids: Identifiers for each parallel worker; one panel is created
+                per id.
+            max_lines_per_panel: Rolling window size for each panel's output
+                buffer. Older lines are discarded as new ones arrive.
+            console: Rich Console to render into. Defaults to a new Console().
+        """
         self.task_ids = list(task_ids)
         self.buffers: dict[str, deque[str]] = {
             tid: deque(maxlen=max_lines_per_panel) for tid in self.task_ids
@@ -107,15 +116,18 @@ class PanelDisplay:
         self._started = False
 
     def __enter__(self) -> PanelDisplay:
+        """Enter the context; the Live display starts lazily on the first message."""
         # Lazy: don't start the Live until the first message arrives.
         # That keeps the terminal free for the confirm prompt that runs
         # before any workers produce output.
         return self
 
     def __exit__(self, *exc: Any) -> None:
+        """Exit the context, flushing a final render and stopping the Live display."""
         self._stop()
 
     def _start_if_needed(self) -> None:
+        """Start the Rich Live display on first call; no-op when not a TTY or already running."""
         if not self._tty or self._started:
             return
         self._live = Live(
@@ -128,6 +140,7 @@ class PanelDisplay:
         self._started = True
 
     def _stop(self) -> None:
+        """Flush a final render and stop the Rich Live display."""
         if self._started and self._live is not None:
             # Final refresh so done/error lines are visible.
             self._live.update(self._render())
@@ -147,6 +160,7 @@ class PanelDisplay:
         return self._make_panel_callback(task_id)
 
     def _make_panel_callback(self, task_id: str) -> Callable[[Any], None]:
+        """Return a callback that routes messages into the TTY panel for *task_id*."""
         def render(msg: Any) -> None:
             self._start_if_needed()
             lines, new_status = _format_message(msg)
@@ -160,6 +174,7 @@ class PanelDisplay:
         return render
 
     def _make_plain_callback(self, task_id: str) -> Callable[[Any], None]:
+        """Return a callback that prints prefixed lines to the console (non-TTY mode)."""
         # Escape the brackets so rich doesn't treat `[task]` as a markup tag.
         prefix = f"\\[{task_id}] "
 
@@ -170,6 +185,7 @@ class PanelDisplay:
         return render
 
     def _render(self) -> Group:
+        """Build the Rich Group of panels from current buffers and statuses."""
         panels = []
         for tid in self.task_ids:
             body = "\n".join(self.buffers[tid]) if self.buffers[tid] else "[dim](waiting)[/dim]"
@@ -186,4 +202,5 @@ class PanelDisplay:
 
 
 def stdout_is_tty() -> bool:
+    """Return ``True`` if stdout is connected to a terminal (not a pipe or redirect)."""
     return sys.stdout.isatty()

@@ -13,5 +13,16 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
 
 
 def _dump_toml(data: dict[str, Any]) -> str:
-    """Serialize to TOML. Multi-line strings rendered literally for readability."""
+    """Serialize *data* to TOML text.
+
+    Multi-line string values are written as TOML literal multi-line strings
+    rather than escaped single-line strings, which keeps prompts and role
+    descriptions readable when inspecting the output.
+
+    Args:
+        data: Mapping to serialize.
+
+    Returns:
+        TOML-formatted string.
+    """
     return tomli_w.dumps(data, multiline_strings=True)

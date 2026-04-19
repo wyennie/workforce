@@ -19,6 +19,13 @@ def _run_auto_merge_single(
     *,
     target: str | None = None,
 ) -> None:
+    """Merge a single completed mission's branch into the current or target branch.
+
+    Args:
+        proj: The project the mission belongs to.
+        meta: Metadata for the completed mission; skipped if not COMPLETED.
+        target: Branch to merge into. ``None`` uses the repo's current branch.
+    """
     if meta.status is not MissionStatus.COMPLETED:
         output.warn("auto-merge skipped: mission did not complete cleanly")
         return
@@ -39,6 +46,14 @@ def _run_auto_merge_parallel(
     *,
     target: str | None = None,
 ) -> None:
+    """Merge all completed sub-mission branches from a parallel run.
+
+    Args:
+        proj: The project the missions belong to.
+        parent: Parent parallel mission metadata; skipped if status is not COMPLETED.
+        subs: Individual sub-mission metadata objects in the merge order.
+        target: Branch to merge into. ``None`` uses the repo's current branch.
+    """
     if parent.status is not ParallelStatus.COMPLETED:
         output.warn(
             f"auto-merge skipped: parent status is {parent.status.value}; "
@@ -55,6 +70,16 @@ def _execute_auto_merge(
     *,
     target: str | None,
 ) -> None:
+    """Execute a merge plan and print per-step results.
+
+    On failure, prints guided conflict-resolution instructions for the first
+    step that has conflicting files.
+
+    Args:
+        proj: The project whose repo to merge within.
+        plan: Ordered list of branches (MergeStep objects) to merge.
+        target: Branch to merge into; ``None`` means merge into the current branch.
+    """
     output.rule("auto-merge")
     repo = Path(proj.repo_path)
     if target is not None:
@@ -141,6 +166,15 @@ def _print_ownership_audit(parent: ParallelMissionMeta) -> None:
 
 
 def _print_merge_plan(parent: ParallelMissionMeta, subs: list[MissionMeta]) -> None:
+    """Print an ordered list of ``git merge`` commands for a parallel mission set.
+
+    Completed sub-missions are shown as runnable commands. Sub-missions that did
+    not complete cleanly are listed as warnings to skip.
+
+    Args:
+        parent: Parent parallel mission metadata.
+        subs: Individual sub-mission metadata objects.
+    """
     plan = merge_plan(parent, subs)
     if not plan:
         return

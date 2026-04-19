@@ -19,6 +19,7 @@ from workforce.specialist import (
 
 
 def _store() -> RosterStore:
+    """Ensure the Workforce data layout exists and return a RosterStore."""
     paths.ensure_layout()
     return RosterStore()
 
