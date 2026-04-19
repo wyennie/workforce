@@ -78,6 +78,20 @@ _DURATION_RE = re.compile(r"^\s*(\d+)\s*([dhwm])\s*$", re.IGNORECASE)
 
 
 def _parse_duration(s: str) -> dt.timedelta:
+    """Parse a compact duration string into a ``timedelta``.
+
+    Accepted units: ``h`` (hours), ``d`` (days), ``w`` (weeks),
+    ``m`` (months, treated as 30 days).  Examples: ``7d``, ``24h``, ``2w``, ``1m``.
+
+    Args:
+        s: Duration string to parse.
+
+    Returns:
+        The corresponding timedelta.
+
+    Raises:
+        typer.BadParameter: If *s* does not match the expected pattern.
+    """
     m = _DURATION_RE.match(s)
     if not m:
         raise typer.BadParameter(
@@ -93,6 +107,17 @@ def _parse_duration(s: str) -> dt.timedelta:
 
 
 def _parse_iso_z(s: str) -> dt.datetime:
+    """Parse a ``'YYYY-MM-DDTHH:MM:SSZ'`` timestamp into a UTC-aware datetime.
+
+    MissionMeta writes timestamps in this format.  Python 3.11+ accepts ``Z``
+    natively; the replace keeps compatibility should that ever change.
+
+    Args:
+        s: ISO 8601 timestamp string ending in ``Z``.
+
+    Returns:
+        UTC-aware datetime object.
+    """
     # MissionMeta writes 'YYYY-MM-DDTHH:MM:SSZ' — fromisoformat in 3.11+
     # accepts 'Z' since 3.11. We require 3.11 anyway.
     return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
