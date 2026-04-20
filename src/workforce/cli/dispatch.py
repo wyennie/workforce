@@ -390,20 +390,63 @@ def _dispatch_detached(
     if yes:
         argv += ["--yes"]
 
-    # Detach so the child survives this process exiting. stdout/stderr go to
-    # /dev/null — the tail window renders from events.jsonl, not stdout.
+    # Pre-create the mission artifacts directory and redirect child stderr to
+    # startup.log so any early crash (bad flag, import error) is diagnosable.
+    startup_log_fh = None
+    meta_path: Path | None = None
+    try:
+        _ps = project_mod.ProjectStore()
+        _proj = _ps.resolve(project_ref)
+        mp = mission.mission_paths(_proj.id, mission_id)
+        mp.root.mkdir(parents=True, exist_ok=True)
+        startup_log_path = mp.root / "startup.log"
+        startup_log_fh = open(startup_log_path, "w")  # noqa: WPS515
+        meta_path = mp.meta
+    except Exception:
+        # Non-fatal: fall back to /dev/null if we can't set up the log file.
+        pass
+
+    # Detach so the child survives this process exiting. stdout goes to
+    # /dev/null; stderr goes to startup.log (or /dev/null as fallback) so any
+    # startup crash is diagnosable without a terminal.
     try:
         subprocess.Popen(
             argv,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=startup_log_fh if startup_log_fh is not None else subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
         )
     except OSError as e:
+        if startup_log_fh is not None:
+            startup_log_fh.close()
         output.die(f"could not spawn background dispatch: {e}")
+    finally:
+        if startup_log_fh is not None:
+            startup_log_fh.close()
 
     output.success(f"dispatched mission {mission_id}")
+
+    # Poll briefly for meta.json to confirm the child started correctly.
+    # If it never appears but startup.log has content, warn the user immediately
+    # rather than making them discover the failure via `mission show`.
+    if meta_path is not None:
+        import time as _time
+        for _ in range(12):  # up to 3 seconds (12 × 0.25s)
+            _time.sleep(0.25)
+            if meta_path.is_file():
+                break
+        else:
+            # meta.json never appeared — child may have crashed.
+            try:
+                log_content = startup_log_path.read_text().strip()
+            except Exception:
+                log_content = ""
+            if log_content:
+                output.warn(
+                    f"[yellow]Mission {mission_id} may have failed to start. "
+                    f"startup.log:[/yellow]\n{log_content[:500]}"
+                )
 
     if open_window:
         from workforce.terminal import open_terminal_window
