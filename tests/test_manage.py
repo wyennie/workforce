@@ -160,27 +160,22 @@ def test_run_manager_chat_sdk_error_does_not_hang(
         raise RuntimeError("SDK transport error")
         yield  # unreachable — makes this an async generator
 
-    def fake_input() -> str | None:
+    # _read_user_input is now async (uses prompt_toolkit); fake it inline.
+    async def fake_input(session: Any) -> str | None:
         call_count[0] += 1
         if call_count[0] == 1:
             return "hello, what can you do?"
         return None  # EOF on second call — signals clean exit
 
-    # asyncio.to_thread wraps the blocking call; replace it so fake_input runs
-    # inline in the event loop without actually spawning a thread.
-    async def fake_to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
-        return fn(*args, **kwargs)
-
     with patch.object(manage, "query", exploding_query):
         with patch.object(manage, "_read_user_input", fake_input):
             with patch("workforce.terminal.open_terminal_window", return_value=False):
-                with patch("asyncio.to_thread", fake_to_thread):
-                    # 5 s should be vastly more than enough; a hang means no fix
-                    rc = asyncio.run(
-                        asyncio.wait_for(
-                            manage.run_manager_chat(proj, rs),
-                            timeout=5.0,
-                        )
+                # 5 s should be vastly more than enough; a hang means no fix
+                rc = asyncio.run(
+                    asyncio.wait_for(
+                        manage.run_manager_chat(proj, rs),
+                        timeout=5.0,
                     )
+                )
 
     assert rc == 0
