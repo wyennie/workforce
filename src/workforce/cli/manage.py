@@ -19,6 +19,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+from prompt_toolkit import PromptSession
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -194,17 +196,23 @@ _CHAT_BANNER = """\
 """
 
 
-def _read_user_input() -> str | None:
-    """Read one user message from stdin. Returns None on EOF (Ctrl-D).
+async def _read_user_input(session: PromptSession[str]) -> str | None:
+    """Read one user message via prompt_toolkit. Returns None on EOF or Ctrl-D.
 
     Multi-line input: keep reading until a blank line, so the user can paste
     a paragraph without the SDK seeing each line as a separate turn. A single
     `/exit` line exits.
+
+    Using ``PromptSession.prompt_async()`` instead of the built-in ``input()``
+    gives full readline-style editing, including correct backspace and cursor
+    movement across visually-wrapped terminal lines.  The plain ``input()``
+    call delegates to the terminal's raw line discipline which has no concept
+    of visual line boundaries, so pressing backspace cannot cross a soft wrap.
     """
     lines: list[str] = []
     try:
-        first = input("manager> ")
-    except EOFError:
+        first = await session.prompt_async("manager> ")
+    except (EOFError, KeyboardInterrupt):
         return None
     if first.strip() in ("/exit", "/quit"):
         return None
@@ -213,8 +221,8 @@ def _read_user_input() -> str | None:
     lines.append(first)
     while True:
         try:
-            nxt = input("        ")
-        except EOFError:
+            nxt = await session.prompt_async("        ")
+        except (EOFError, KeyboardInterrupt):
             break
         if not nxt.strip():
             break
@@ -330,6 +338,7 @@ async def run_manager_chat(
     turn_done = asyncio.Event()
     turn_done.set()  # ready for first user input
     stop = asyncio.Event()
+    _session: PromptSession[str] = PromptSession()
 
     async def feed() -> AsyncIterator[dict[str, Any]]:
         while True:
@@ -360,7 +369,7 @@ async def run_manager_chat(
             await turn_done.wait()
             if stop.is_set():
                 break
-            text = await asyncio.to_thread(_read_user_input)
+            text = await _read_user_input(_session)
             if text is None:
                 # EOF or /exit
                 await pending_inputs.put(None)
