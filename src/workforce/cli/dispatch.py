@@ -462,6 +462,7 @@ def _dispatch_with_manager(
                 ticket=ticket,
                 repo_path=Path(proj.repo_path),
                 project_specialists=specs_info,
+                on_message=_make_manager_renderer(),
             )
         )
     except KeyboardInterrupt:
@@ -643,6 +644,7 @@ def _dispatch_after_manager_parallel(
                 project_specialists=specs_info,
                 prior_decomposition=decomp,
                 user_feedback=decision.feedback,
+                on_message=_make_manager_renderer(),
             ))
         except ManagerError as e:
             output.die(f"manager replan failed: {e}")
@@ -858,6 +860,26 @@ def _make_sub_renderer(task_id: str) -> Any:
                 f"{prefix}[dim]turns={msg.num_turns} duration={msg.duration_ms}ms "
                 f"cost=${(msg.total_cost_usd or 0):.4f}[/dim]"
             )
+
+    return render
+
+
+def _make_manager_renderer() -> Any:
+    """Return an ``on_message`` callback for Manager planning turns.
+
+    Renders tool calls as ``[dim]→ Tool(arg)[/dim]`` lines so the user can see
+    the Manager inspecting the repo. Text output is suppressed — the Manager's
+    final reply is a JSON blob, not prose for users.
+    """
+
+    def render(msg: Any) -> None:
+        if isinstance(msg, AssistantMessage):
+            for block in msg.content:
+                if isinstance(block, ToolUseBlock):
+                    args_preview = _truncate(_summarize_tool_args(block.name, block.input), 80)
+                    output.info(f"[dim]→ {block.name}({args_preview})[/dim]")
+                # Text blocks are intentionally skipped — the Manager's prose
+                # output is raw JSON; rendering it would confuse users.
 
     return render
 

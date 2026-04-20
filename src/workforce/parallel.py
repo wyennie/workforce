@@ -404,6 +404,7 @@ async def dispatch_parallel(
                 ticket=ticket,
                 repo_path=Path(project.repo_path),
                 project_specialists=specs_info,
+                on_message=on_manager_message,
             )
         except ManagerError as e:
             _save_parent_meta(
