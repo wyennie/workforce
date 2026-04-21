@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import fcntl
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None  # Windows - file locking not available
 import json
 import logging
 import os
@@ -692,7 +695,12 @@ async def dispatch(
             commits = scan_commits(env.cwd, env.base_sha)
         except subprocess.CalledProcessError as exc:
             commits = []
-            commit_scan_error = f"commit scan failed: {exc}"
+            # exc.stderr is str (text=True in scan_commits); surface first 300 chars.
+            stderr_snippet = (exc.stderr or "")[:300]
+            commit_scan_error = (
+                f"commit scan failed: {exc}"
+                + (f"; stderr: {stderr_snippet}" if stderr_snippet else "")
+            )
     else:
         commits = []
 
@@ -798,8 +806,11 @@ def _append_project_memory(path: Path, entry: str) -> None:
     if not entry.endswith("\n"):
         entry = entry + "\n"
     with path.open("a") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        if _fcntl is not None:
+            # Unix: exclusive lock so concurrent missions don't interleave.
+            _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
         try:
             f.write(entry)
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            if _fcntl is not None:
+                _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
