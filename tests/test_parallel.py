@@ -902,6 +902,47 @@ def test_auto_merge_into_already_on_target(repo: Path) -> None:
     assert all(r.success for r in results)
 
 
+def test_auto_merge_into_restores_branch_on_failure(repo: Path) -> None:
+    """If a merge fails, auto_merge_into switches back to the original branch.
+
+    Arrange: start on feature-x; try to merge wf/conflict into main.  The
+    conflict merge will fail, and the function must restore feature-x.  A
+    warning ``AutoMergeStepResult`` is appended to the returned list.
+    """
+    # wf/a touches shared.txt; main will get it first (clean merge).
+    _make_branch(repo, "wf/a", "shared.txt", "from a\n")
+    # wf/conflict also touches shared.txt → conflict after wf/a is on main.
+    _make_branch(repo, "wf/conflict", "shared.txt", "from conflict\n")
+
+    # Move to a feature branch to simulate not being on main.
+    subprocess.run(["git", "checkout", "-q", "-b", "feature-x"], cwd=repo, check=True)
+
+    # Merge wf/a into main first (clean), then wf/conflict (will conflict).
+    # Merge wf/a into main directly so the conflict is set up.
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "merge", "--no-ff", "-q", "wf/a"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-q", "feature-x"], cwd=repo, check=True)
+
+    # Now auto_merge_into main with only the conflicting step.
+    plan = [_step("conflict", "wf/conflict")]
+    results = auto_merge_into(repo, plan, target_branch="main")
+
+    # The merge step should have failed.
+    assert not results[0].success
+
+    # A warning restore entry should be appended.
+    restore_entries = [r for r in results if r.task_id == "_restore"]
+    assert restore_entries, "expected a restore warning entry in results"
+    assert "feature-x" in restore_entries[0].detail
+
+    # The repo must be back on feature-x, not main.
+    cur = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert cur == "feature-x"
+
+
 # ----- topological waves ----------------------------------------------------
 
 
