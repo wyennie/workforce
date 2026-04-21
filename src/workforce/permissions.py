@@ -146,3 +146,114 @@ def make_path_owner_callback(
         )
 
     return callback
+
+
+# ---------------------------------------------------------------------------
+# Read-only Bash gate (used by the Reviewer)
+# ---------------------------------------------------------------------------
+
+# The Bash tool passes the shell command under this key in tool_input.
+_BASH_COMMAND_KEY = "command"
+
+# Patterns whose presence in a Bash command indicates a write-side effect.
+# Each tuple is (compiled_regex, human_description_for_denial_message).
+# Checked in order; first match wins.
+_BASH_DENY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\brm\b"), "rm (file deletion)"),
+    (re.compile(r"\bmv\b"), "mv (file move/rename)"),
+    (re.compile(r"\bcp\b"), "cp (file copy)"),
+    (re.compile(r"\bchmod\b"), "chmod (permission change)"),
+    (re.compile(r"\bchown\b"), "chown (ownership change)"),
+    (re.compile(r"\bpip\s+install\b"), "pip install (package installation)"),
+    (re.compile(r"\bpip3\s+install\b"), "pip3 install (package installation)"),
+    (re.compile(r"\bnpm\s+(?:install|add|i)\b"), "npm install/add (package installation)"),
+    (re.compile(r"\byarn\s+(?:add|install)\b"), "yarn add/install (package installation)"),
+    (re.compile(r"\bpnpm\s+(?:add|install)\b"), "pnpm add/install (package installation)"),
+    (re.compile(r"\buv\s+pip\s+install\b"), "uv pip install (package installation)"),
+]
+
+
+def _has_write_redirect(cmd: str) -> bool:
+    """Return True if the command redirects output to a real file (not /dev/*).
+
+    We allow ``> /dev/null``, ``2>/dev/null``, and fd redirections like
+    ``2>&1`` since those merely suppress output rather than writing a file.
+    Any remaining ``>`` after stripping those safe forms is treated as a
+    file-write redirection.
+    """
+    # Strip safe /dev/ redirections (discard output, not write to disk)
+    safe = re.sub(r"\d?\s*>\s*/dev/(?:null|stdout|stderr)\b", "", cmd)
+    # Strip fd duplication redirections (2>&1, etc.)
+    safe = re.sub(r"\d>&\d", "", safe)
+    return ">" in safe
+
+
+def make_read_only_bash_callback() -> CanUseTool:
+    """Build a ``can_use_tool`` callback that restricts Bash to read-only ops.
+
+    Intended for the Reviewer, which is allowed to run tests and linters but
+    must not write files, delete them, or install packages.
+
+    **Allowed:** ``git``, ``pytest``, ``python -m pytest``, ``mypy``,
+    ``ruff check``, ``npm test``, ``cargo test``, ``make``, and other common
+    read-only lint / test runners.
+
+    **Denied:** commands with write-side effects — file-output redirection
+    (``>``), ``rm``, ``mv``, ``cp``, ``pip install``, ``npm install``, etc.
+
+    A clear denial message is returned so the Reviewer can self-correct
+    without needing human intervention.
+
+    Only the ``Bash`` tool is filtered; all other tools pass through.
+    """
+
+    async def callback(
+        tool_name: str,
+        tool_input: dict[str, Any],
+        context: ToolPermissionContext,
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        # Only Bash is subject to read-only enforcement.
+        if tool_name != "Bash":
+            return PermissionResultAllow()
+
+        cmd = tool_input.get(_BASH_COMMAND_KEY, "")
+        if not isinstance(cmd, str):
+            return PermissionResultAllow()
+        cmd = cmd.strip()
+        if not cmd:
+            return PermissionResultAllow()
+
+        # Deny file-output redirection to real paths (applies to all commands,
+        # including git).  Checked before the git allowlist so that
+        # `git log > file.txt` is caught.
+        if _has_write_redirect(cmd):
+            return PermissionResultDeny(
+                message=(
+                    f"Bash command rejected: output redirection (>) to a file "
+                    f"is not allowed in review sessions. Use Read/Glob/Grep to "
+                    f"inspect files, or run tests without redirecting output. "
+                    f"(command: {cmd!r})"
+                ),
+            )
+
+        # Git commands are allowed in full after the redirect check above —
+        # they carry their own permission model and are typically read ops
+        # (diff, log, status, show).
+        if cmd.startswith("git ") or cmd == "git":
+            return PermissionResultAllow()
+
+        # Deny specific destructive or install commands.
+        for pattern, description in _BASH_DENY_PATTERNS:
+            if pattern.search(cmd):
+                return PermissionResultDeny(
+                    message=(
+                        f"Bash command rejected: {description} is not permitted "
+                        f"in review sessions. Only read-only commands are allowed "
+                        f"(git, pytest, mypy, ruff check, cargo test, etc.). "
+                        f"(command: {cmd!r})"
+                    ),
+                )
+
+        return PermissionResultAllow()
+
+    return callback

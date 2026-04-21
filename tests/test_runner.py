@@ -315,3 +315,162 @@ def test_message_to_jsonable_handles_non_dataclass() -> None:
     d = runner.message_to_jsonable("not a dataclass")
     assert d["_type"] == "str"
     assert "repr" in d
+
+
+# ----- _single_message_stream ------------------------------------------------
+
+
+def test_single_message_stream_shape() -> None:
+    """Regression: verify the dict format emitted by _single_message_stream.
+
+    If the SDK changes the internal streaming-input message format, the
+    can_use_tool path breaks silently.  This test documents the expected shape
+    so that a format change surfaces as an explicit test failure rather than a
+    mysterious runtime error.  See the TODO comment in runner.py above the
+    function definition.
+    """
+
+    async def collect() -> list[dict[str, Any]]:
+        return [m async for m in runner._single_message_stream("hello world")]
+
+    msgs = asyncio.run(collect())
+    assert len(msgs) == 1
+    msg = msgs[0]
+    assert msg["type"] == "user"
+    assert msg["message"]["role"] == "user"
+    assert msg["message"]["content"] == "hello world"
+    assert "session_id" in msg
+    assert "parent_tool_use_id" in msg
+
+
+# ----- can_use_tool path ------------------------------------------------------
+
+
+def test_can_use_tool_uses_streaming_protocol(tmp_path: Path) -> None:
+    """When can_use_tool is set, the prompt must be an AsyncIterable and
+    permission_mode must be 'default' (not 'bypassPermissions').
+    """
+    from claude_agent_sdk import PermissionResultAllow
+
+    captured: dict[str, Any] = {}
+
+    async def my_callback(
+        tool_name: str, tool_input: dict[str, Any], ctx: Any
+    ) -> PermissionResultAllow:
+        return PermissionResultAllow()
+
+    def fake_query_cap(
+        *, prompt: Any, options: ClaudeAgentOptions, **_: Any
+    ) -> Any:
+        captured["prompt"] = prompt
+        captured["permission_mode"] = options.permission_mode
+        captured["can_use_tool"] = options.can_use_tool
+
+        async def gen() -> Any:
+            # consume the async iterable prompt if present
+            if hasattr(prompt, "__aiter__"):
+                async for _ in prompt:
+                    pass
+            yield _result()
+
+        return gen()
+
+    with patch.object(runner, "query", fake_query_cap):
+        asyncio.run(
+            run_specialist(
+                spec=make_spec(),
+                system_prompt="sys",
+                user_prompt="hello",
+                cwd=tmp_path,
+                can_use_tool=my_callback,
+            )
+        )
+
+    # Prompt must be an async iterable, not a plain string.
+    assert not isinstance(captured["prompt"], str)
+    assert hasattr(captured["prompt"], "__aiter__")
+    # permission_mode must be "default" so the callback fires.
+    assert captured["permission_mode"] == "default"
+    # The callback reference must be threaded through to options.
+    assert captured["can_use_tool"] is my_callback
+
+
+def test_can_use_tool_callback_is_invoked(tmp_path: Path) -> None:
+    """The can_use_tool callback must be called for each simulated tool use."""
+    from claude_agent_sdk import PermissionResultAllow, ToolPermissionContext
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def my_callback(
+        tool_name: str,
+        tool_input: dict[str, Any],
+        ctx: ToolPermissionContext,
+    ) -> PermissionResultAllow:
+        calls.append((tool_name, tool_input))
+        return PermissionResultAllow()
+
+    def fake_query_with_callback(
+        *, prompt: Any, options: ClaudeAgentOptions, **_: Any
+    ) -> Any:
+        """Fake SDK that simulates a tool-use permission check, then yields."""
+
+        async def gen() -> Any:
+            # consume prompt stream
+            if hasattr(prompt, "__aiter__"):
+                async for _ in prompt:
+                    pass
+            # simulate SDK calling can_use_tool before executing a tool
+            if options.can_use_tool is not None:
+                ctx = ToolPermissionContext(
+                    signal=None, suggestions=[], tool_use_id="sim-1"
+                )
+                await options.can_use_tool("Read", {"file_path": "foo.py"}, ctx)
+            yield _result()
+
+        return gen()
+
+    with patch.object(runner, "query", fake_query_with_callback):
+        result = asyncio.run(
+            run_specialist(
+                spec=make_spec(),
+                system_prompt="sys",
+                user_prompt="do the thing",
+                cwd=tmp_path,
+                can_use_tool=my_callback,
+            )
+        )
+
+    assert result.status is RunStatus.COMPLETED
+    assert len(calls) == 1
+    assert calls[0] == ("Read", {"file_path": "foo.py"})
+
+
+def test_no_can_use_tool_uses_string_prompt(tmp_path: Path) -> None:
+    """Without can_use_tool, the prompt stays a plain string (no overhead)."""
+    captured: dict[str, Any] = {}
+
+    def fake_query_cap(
+        *, prompt: Any, options: ClaudeAgentOptions, **_: Any
+    ) -> Any:
+        captured["prompt"] = prompt
+        captured["permission_mode"] = options.permission_mode
+
+        async def gen() -> Any:
+            yield _result()
+
+        return gen()
+
+    with patch.object(runner, "query", fake_query_cap):
+        asyncio.run(
+            run_specialist(
+                spec=make_spec(),
+                system_prompt="sys",
+                user_prompt="hello",
+                cwd=tmp_path,
+                # no can_use_tool
+            )
+        )
+
+    assert isinstance(captured["prompt"], str)
+    assert captured["prompt"] == "hello"
+    assert captured["permission_mode"] == "bypassPermissions"

@@ -294,6 +294,71 @@ def test_reviewer_error_does_not_fail_mission(
     assert meta.status is MissionStatus.REVIEW_REJECTED
 
 
+def _make_assistant_msg(text: str) -> Any:
+    """Build a minimal AssistantMessage with the given text."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    return AssistantMessage(
+        content=[TextBlock(text=text)],
+        model="claude-sonnet-4-6",
+        parent_tool_use_id=None,
+        error=None,
+        usage=None,
+        message_id="m1",
+        stop_reason=None,
+        session_id="s1",
+        uuid=None,
+    )
+
+
+def _make_result_msg(cost: float = 0.02) -> Any:
+    return ResultMessage(
+        subtype="success", duration_ms=500, duration_api_ms=400,
+        is_error=False, num_turns=1, session_id="s", stop_reason=None,
+        total_cost_usd=cost, usage=None, result=None,
+        structured_output=None, model_usage=None, permission_denials=None,
+        errors=None, uuid=None,
+    )
+
+
+def test_run_reviewer_wires_bash_constraint(tmp_path: Path) -> None:
+    """run_reviewer must pass can_use_tool and permission_mode='default' to query."""
+    captured: dict[str, Any] = {}
+    approve_json = '```json\n{"approved": true, "summary": "lgtm", "issues": []}\n```'
+
+    def fake_query(*, prompt: Any, options: Any, **_: Any) -> Any:
+        captured["options"] = options
+
+        async def gen() -> Any:
+            # consume the async-iterable prompt
+            if hasattr(prompt, "__aiter__"):
+                async for _ in prompt:
+                    pass
+            yield _make_assistant_msg(approve_json)
+            yield _make_result_msg()
+
+        return gen()
+
+    from workforce import reviewer as reviewer_mod
+
+    with patch.object(reviewer_mod, "query", fake_query):
+        review, cost = asyncio.run(
+            reviewer_mod.run_reviewer(
+                worktree_path=tmp_path,
+                base_sha="abc123",
+                ticket="review this",
+            )
+        )
+
+    assert review.approved is True
+    opts = captured["options"]
+    # Bash constraint must be active.
+    assert opts.can_use_tool is not None, "can_use_tool should be wired in"
+    assert opts.permission_mode == "default", (
+        "permission_mode must be 'default' for can_use_tool to fire"
+    )
+
+
 def test_review_skipped_when_runner_fails(
     stores: tuple[RosterStore, ProjectStore, WorktreeManager, Project, Specialist],
 ) -> None:

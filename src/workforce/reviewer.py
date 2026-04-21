@@ -8,6 +8,12 @@ original ticket, and (optionally) the contract, then decides:
 Built-in role like the Manager — not a hireable specialist. Read-only
 tools (Read, Glob, Grep, Bash for running tests). Returns structured JSON.
 
+Bash is constrained to read-only operations via a ``can_use_tool`` callback
+(``workforce.permissions.make_read_only_bash_callback``). Commands with
+write-side effects — file redirection, ``rm``, ``pip install``, etc. — are
+blocked with a clear denial message so the Reviewer can self-correct without
+human intervention.
+
 Used by mission.dispatch in a revision loop: worker runs → Reviewer
 checks → if rejected, worker re-runs with feedback → ... up to N rounds.
 """
@@ -18,6 +24,7 @@ import asyncio
 import json
 import re
 import subprocess
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +37,7 @@ from claude_agent_sdk import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from workforce.permissions import make_read_only_bash_callback
 from workforce.specialist import DEFAULT_MODEL
 from workforce.utils import _FENCE_RE
 
@@ -197,6 +205,25 @@ def parse_review(text: str) -> Review:
     raise ReviewError(f"could not parse a Review from reviewer output: {last_err}")
 
 
+# ----- Streaming prompt helper ----------------------------------------------
+
+
+async def _prompt_to_stream(text: str) -> AsyncIterator[dict[str, Any]]:
+    """Yield ``text`` as a single SDK streaming-protocol message dict.
+
+    The SDK requires an ``AsyncIterable`` prompt (not a bare string) when
+    ``can_use_tool`` is set. This wraps the reviewer's user prompt in the
+    expected one-message format, matching the shape used by
+    ``runner._single_message_stream``.
+    """
+    yield {
+        "type": "user",
+        "session_id": "",
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+    }
+
+
 # ----- Run ------------------------------------------------------------------
 
 
@@ -212,7 +239,15 @@ async def run_reviewer(
     max_budget_usd: float = 1.0,
     max_wall_seconds: float = 300.0,
 ) -> tuple[Review, float]:
-    """Run the Reviewer against the worktree's diff. Returns (review, cost_usd)."""
+    """Run the Reviewer against the worktree's diff. Returns (review, cost_usd).
+
+    Bash is constrained to read-only operations via ``make_read_only_bash_callback``
+    — the callback blocks file writes, deletions, and package installs with a
+    clear denial message so the Reviewer can self-correct.
+    """
+    # Build the Bash read-only gate. `can_use_tool` requires the streaming-input
+    # protocol, so the prompt must be an AsyncIterable, not a bare string.
+    bash_gate = make_read_only_bash_callback()
     options = ClaudeAgentOptions(
         cwd=str(worktree_path),
         system_prompt=REVIEWER_SYSTEM_PROMPT,
@@ -220,16 +255,22 @@ async def run_reviewer(
         model=model,
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
-        permission_mode="bypassPermissions",
+        # "default" is required when can_use_tool is set; "bypassPermissions"
+        # would short-circuit the callback entirely.
+        permission_mode="default",
+        can_use_tool=bash_gate,
     )
 
     collected: list[Any] = []
     cost = 0.0
+    prompt_stream = _prompt_to_stream(
+        _user_prompt(ticket, base_sha, contract, prior_reviews or [])
+    )
 
     async def consume() -> None:
         nonlocal cost
         async for msg in query(
-            prompt=_user_prompt(ticket, base_sha, contract, prior_reviews or []),
+            prompt=prompt_stream,
             options=options,
         ):
             collected.append(msg)
