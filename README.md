@@ -84,10 +84,12 @@ workforce project unassign <project> <specialist>
 workforce project list
 workforce project show <project>
 workforce project forget <project> -y  # remove registration + memory; leaves the repo alone
+workforce project nuke <project> -y    # remove all branches, worktrees, and mission history. Irreversible.
 
 # Missions
 workforce dispatch <project> "<ticket>" [--specialist <name>] [--branch <name>] [--auto-merge] [--review]
-workforce manage <project> [--branch <name>] [--yolo]   # interactive Manager chat
+workforce manage <project> [--branch <name>] [--yolo]   # interactive Manager chat; --yolo skips per-tool prompts
+workforce stats [--project P] [--specialist S] [--since DATE] [--json]  # aggregated mission stats
 workforce missions <project>
 workforce mission show <id>
 workforce mission clean <id>
@@ -111,6 +113,33 @@ Pass `--branch dev` on `dispatch` or `manage` to keep work on a staging branch. 
 ### Reviewer loop (`--review`)
 
 With `--review`, after each sub-mission a Reviewer specialist (read-only) inspects the diff. On rejection, the original specialist re-runs with the Reviewer's feedback. Capped at `--max-revisions` rounds (default 3).
+
+### Manager chat (`manage`)
+
+`workforce manage <project>` opens an interactive conversation with the Manager. Two notable options:
+
+- `--yolo` — skips all per-tool permission prompts in the Manager chat (sets `bypassPermissions`). Use only when you fully trust the Manager's actions; the default is to confirm before each tool call.
+- `--branch <name>` — same staging-branch semantics as `dispatch --branch`.
+
+### Workspace project kind
+
+A _workspace_ project (`workforce project add <path> --kind workspace`) differs from a normal git project:
+
+- **No git isolation**: missions run directly in the workspace directory; there are no worktrees or branches.
+- **`--review`, `--auto-merge`, and `--branch` are not available** — all specialists share the working directory, so branching is not applicable.
+- Useful for projects that are not version-controlled or where you want specialists to coordinate in a single directory.
+
+### Memory growth
+
+Each specialist accumulates a memory file that grows over time as missions complete. Large memory files slow context loading. Periodically compact it once tooling is available:
+
+```
+workforce memory compact <name>   # coming soon
+```
+
+## Architecture
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of how Workforce dispatches missions, manages worktrees, and handles the reviewer loop.
 
 ## Commit policy
 
