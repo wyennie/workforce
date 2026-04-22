@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import typer
+from click import ParameterSource
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
@@ -78,7 +79,12 @@ from .merge import (
 
 
 def dispatch_command(
-    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    ctx: typer.Context,
+    project_ref: str = typer.Argument(
+        ...,
+        help="Project name, ID, or . to auto-detect from current directory",
+        metavar="PROJECT",
+    ),
     ticket: str = typer.Argument(..., help="Ticket text in quotes."),
     specialist: str | None = typer.Option(
         None,
@@ -189,6 +195,19 @@ def dispatch_command(
         proj = project_store.resolve(project_ref)
     except project_mod.ProjectError as e:
         output.die(str(e))
+
+    # Apply per-project .workforce.toml defaults for flags not explicitly passed.
+    _proj_config = project_mod.load_project_config(Path(proj.repo_path))
+    if _proj_config.review is not None and ctx.get_parameter_source("review") is ParameterSource.DEFAULT:
+        review = _proj_config.review
+    if _proj_config.auto_merge is not None and ctx.get_parameter_source("auto_merge") is ParameterSource.DEFAULT:
+        auto_merge = _proj_config.auto_merge
+    if _proj_config.max_turns is not None and ctx.get_parameter_source("max_turns") is ParameterSource.DEFAULT:
+        max_turns = _proj_config.max_turns
+    if _proj_config.max_cost is not None and ctx.get_parameter_source("max_cost") is ParameterSource.DEFAULT:
+        max_cost = _proj_config.max_cost
+    if _proj_config.default_specialist is not None and ctx.get_parameter_source("specialist") is ParameterSource.DEFAULT:
+        specialist = _proj_config.default_specialist
 
     repo_path = Path(proj.repo_path)
     if not repo_path.is_dir():
