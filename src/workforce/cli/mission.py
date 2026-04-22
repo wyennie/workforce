@@ -1,4 +1,4 @@
-"""Read-only mission inspection commands: missions list, replay, show, tail.
+"""Mission inspection and dispatch commands: missions list, replay, show, tail, retry, diff.
 
 Also hosts `render_labeled_event`, used by `cli_project` for the project-wide
 tail stream.
@@ -7,6 +7,8 @@ tail stream.
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -17,6 +19,9 @@ from workforce import mission, output, paths
 from workforce import project as project_mod
 from workforce.mission import MissionMeta
 from workforce.parallel import ParallelMissionMeta
+from workforce.runner import RunLimits
+from workforce.specialist import RosterStore
+from workforce.worktree import WorktreeManager
 
 from ._common import (
     _PARALLEL_STATUS_STYLES,
@@ -418,3 +423,120 @@ def mission_tail(
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
         output.info("[dim](stopped)[/dim]")
+
+
+# ----- retry ----------------------------------------------------------------
+
+
+def retry_command(
+    mission_id: str = typer.Argument(..., help="Mission id to retry."),
+    background: bool = typer.Option(
+        False, "--background",
+        help="Background the re-dispatched mission and return immediately.",
+    ),
+) -> None:
+    """Re-dispatch a past mission with the same ticket and specialist."""
+    paths.ensure_layout()
+    proj, meta = _find_mission(mission_id)
+    mp = mission.mission_paths(proj.id, mission_id)
+
+    if not mp.ticket.is_file():
+        output.die(f"no ticket.md found for mission {mission_id}")
+    ticket_text = mp.ticket.read_text()
+
+    roster_store = RosterStore()
+    project_store = project_mod.ProjectStore()
+    worktree_manager = WorktreeManager()
+    limits = RunLimits()
+
+    if isinstance(meta, MissionMeta):
+        # Single mission (direct-specialist or manager-picked single) — re-dispatch
+        # with the same specialist.
+        if not roster_store.exists(meta.specialist):
+            output.die(f"specialist {meta.specialist!r} no longer exists in the roster")
+        spec = roster_store.load(meta.specialist)
+
+        if background:
+            # Lazy import avoids a circular dependency at module-load time.
+            from workforce.cli.dispatch import _dispatch_detached  # noqa: PLC0415
+            _dispatch_detached(
+                project_ref=proj.name,
+                ticket=ticket_text,
+                specialist=meta.specialist,
+                mission_id_override=None,
+                max_turns=limits.max_turns,
+                max_cost=limits.max_budget_usd,
+                max_wall=limits.max_wall_seconds,
+                review=False,
+                max_revisions=3,
+                open_window=False,
+            )
+        else:
+            new_mission_id = mission.generate_mission_id()
+            output.info(f"retrying as mission [bold]{new_mission_id}[/bold]")
+            from workforce.cli.dispatch import _dispatch_direct  # noqa: PLC0415
+            _dispatch_direct(
+                proj, ticket_text, spec,
+                roster_store, project_store, worktree_manager, limits,
+                mission_id=new_mission_id,
+            )
+
+    elif isinstance(meta, ParallelMissionMeta):
+        if background:
+            output.die("--background is not supported for parallel parent mission retries")
+        from workforce.cli.dispatch import _dispatch_with_manager  # noqa: PLC0415
+        _dispatch_with_manager(
+            proj, ticket_text, roster_store, project_store, worktree_manager,
+            limits=limits, skip_confirm=False, auto_staff=True,
+        )
+
+
+# ----- diff -----------------------------------------------------------------
+
+
+def diff_command(
+    mission_id: str = typer.Argument(..., help="Mission id."),
+    stat: bool = typer.Option(
+        False, "--stat", help="Show diffstat instead of full diff.",
+    ),
+) -> None:
+    """Show the git diff between a mission's base SHA and HEAD in its worktree.
+
+    For parallel parent missions, iterates over each sub-mission and shows a
+    labelled header followed by that sub-mission's diff.
+    """
+    paths.ensure_layout()
+    proj, meta = _find_mission(mission_id)
+
+    if isinstance(meta, ParallelMissionMeta):
+        for ref in meta.sub_missions:
+            output.rule(f"{ref.task_id} ({ref.mission_id})")
+            sub_meta = _load_any_meta(proj.id, ref.mission_id)
+            if isinstance(sub_meta, MissionMeta):
+                _run_git_diff(sub_meta, stat=stat)
+            else:
+                output.warn(f"  no meta for sub-mission {ref.mission_id}")
+    else:
+        _run_git_diff(meta, stat=stat)
+
+
+def _run_git_diff(meta: MissionMeta, *, stat: bool) -> None:
+    """Run ``git diff {base_sha}..HEAD`` in the mission's worktree."""
+    if meta.base_sha is None or meta.worktree_path is None:
+        output.warn(
+            f"  mission {meta.mission_id}: no base_sha or worktree_path "
+            "(workspace mission — no git diff available)"
+        )
+        return
+
+    worktree = Path(meta.worktree_path)
+    if not worktree.is_dir():
+        output.warn(f"  worktree {worktree} no longer exists")
+        return
+
+    cmd = ["git", "diff"]
+    if stat:
+        cmd.append("--stat")
+    cmd.append(f"{meta.base_sha}..HEAD")
+
+    subprocess.run(cmd, cwd=worktree)

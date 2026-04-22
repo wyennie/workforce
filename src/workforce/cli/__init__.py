@@ -106,6 +106,8 @@ mission_sub.command("show")(mission.mission_show)
 mission_sub.command("tail")(mission.mission_tail)
 mission_sub.command("clean")(cleanup.mission_clean)
 mission_sub.command("prune")(cleanup.mission_prune)
+mission_sub.command("retry")(mission.retry_command)
+mission_sub.command("diff")(mission.diff_command)
 app.add_typer(mission_sub)
 
 branches_sub = typer.Typer(

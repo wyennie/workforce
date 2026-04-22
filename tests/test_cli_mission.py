@@ -10,10 +10,13 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from unittest.mock import MagicMock
+
 from workforce.cli import app
 from workforce.cli._common import _summarize_tool_args, _truncate
 from workforce.cli.cleanup import _parse_duration, _parse_iso_z
 from workforce.mission import MissionMeta, MissionStatus, mission_paths
+from workforce.parallel import ParallelMissionMeta, ParallelStatus, SubMissionRef
 from workforce.project import Project, ProjectStore
 from workforce.specialist import RosterStore, Specialist
 
@@ -446,3 +449,311 @@ def test_tail_follow_mode_terminates_on_keyboard_interrupt(
     assert "line before interrupt" in result.output
     # The handler prints "(stopped)" to signal clean exit.
     assert "stopped" in result.output
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _make_single_meta(
+    proj: Project,
+    spec: Specialist,
+    mid: str,
+    *,
+    worktree_path: str | None = None,
+    base_sha: str | None = None,
+) -> MissionMeta:
+    """Create a MissionMeta and write it (+ ticket.md) to disk."""
+    mp = mission_paths(proj.id, mid)
+    mp.root.mkdir(parents=True, exist_ok=True)
+    meta = MissionMeta(
+        mission_id=mid,
+        project_id=proj.id,
+        project_name=proj.name,
+        specialist=spec.name,
+        model=spec.model,
+        ticket="the original ticket text",
+        branch=None if base_sha is None else f"workforce/{mid}",
+        worktree_path=worktree_path,
+        base_sha=base_sha,
+        started_at="2026-05-03T00:00:00Z",
+        ended_at="2026-05-03T00:01:00Z",
+        duration_seconds=60.0,
+        status=MissionStatus.COMPLETED,
+    )
+    mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
+    mp.ticket.write_text("the original ticket text")
+    return meta
+
+
+# ----- mission retry ---------------------------------------------------------
+
+
+def test_retry_dispatches_same_specialist(
+    workspace_setup: tuple[Project, Specialist],
+) -> None:
+    """retry calls _dispatch_direct with the original ticket and same specialist."""
+    proj, spec = workspace_setup
+    mid = "m-retry-001"
+    _make_single_meta(proj, spec, mid)
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_dispatch_direct(
+        p: Any, ticket: str, sp: Any, *args: Any, **kwargs: Any
+    ) -> None:
+        calls.append({"ticket": ticket, "specialist": sp.name})
+
+    runner = CliRunner()
+    with patch("workforce.cli.dispatch._dispatch_direct", side_effect=fake_dispatch_direct):
+        result = runner.invoke(app, ["mission", "retry", mid])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["ticket"] == "the original ticket text"
+    assert calls[0]["specialist"] == spec.name
+
+
+def test_retry_prints_new_mission_id(
+    workspace_setup: tuple[Project, Specialist],
+) -> None:
+    """retry prints the new mission id before starting the dispatch."""
+    proj, spec = workspace_setup
+    mid = "m-retry-002"
+    _make_single_meta(proj, spec, mid)
+
+    runner = CliRunner()
+    with patch("workforce.cli.dispatch._dispatch_direct"):
+        result = runner.invoke(app, ["mission", "retry", mid])
+
+    assert result.exit_code == 0, result.output
+    # A new mission id (starts with 'm-') should appear in the output.
+    assert any(token.startswith("m-") for token in result.output.split())
+
+
+def test_retry_background_calls_dispatch_detached(
+    workspace_setup: tuple[Project, Specialist],
+) -> None:
+    """retry --background delegates to _dispatch_detached (no terminal window)."""
+    proj, spec = workspace_setup
+    mid = "m-retry-003"
+    _make_single_meta(proj, spec, mid)
+
+    detached_calls: list[dict[str, Any]] = []
+
+    def fake_detached(**kwargs: Any) -> None:
+        detached_calls.append(kwargs)
+        # _dispatch_detached normally calls output.success; simulate it.
+        from workforce import output as _out
+        _out.success("dispatched mission m-fake-001")
+
+    runner = CliRunner()
+    with patch("workforce.cli.dispatch._dispatch_detached", side_effect=fake_detached):
+        result = runner.invoke(app, ["mission", "retry", mid, "--background"])
+
+    assert result.exit_code == 0, result.output
+    assert len(detached_calls) == 1
+    assert detached_calls[0]["specialist"] == spec.name
+    assert detached_calls[0]["ticket"] == "the original ticket text"
+    assert detached_calls[0]["open_window"] is False
+
+
+def test_retry_dies_when_ticket_md_missing(
+    workspace_setup: tuple[Project, Specialist],
+) -> None:
+    """retry should die with a clear message if ticket.md is absent."""
+    proj, spec = workspace_setup
+    mid = "m-retry-004"
+    mp = mission_paths(proj.id, mid)
+    mp.root.mkdir(parents=True, exist_ok=True)
+    # Write meta but NOT ticket.md.
+    meta = MissionMeta(
+        mission_id=mid,
+        project_id=proj.id,
+        project_name=proj.name,
+        specialist=spec.name,
+        model=spec.model,
+        ticket="t",
+        branch=None,
+        worktree_path=None,
+        base_sha=None,
+        started_at="2026-05-03T00:00:00Z",
+        ended_at="2026-05-03T00:01:00Z",
+        duration_seconds=60.0,
+        status=MissionStatus.COMPLETED,
+    )
+    mp.meta.write_text(meta.model_dump_json(indent=2) + "\n")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mission", "retry", mid])
+
+    assert result.exit_code != 0
+    assert "ticket.md" in result.output
+
+
+def test_retry_parallel_background_is_rejected(
+    workspace_setup: tuple[Project, Specialist],
+) -> None:
+    """retry --background on a parallel parent mission should die with an error."""
+    proj, spec = workspace_setup
+    parent_mid = "m-retry-par-001"
+    mp = mission_paths(proj.id, parent_mid)
+    mp.root.mkdir(parents=True, exist_ok=True)
+    from workforce.manager import DecompositionKind
+    parent_meta = ParallelMissionMeta(
+        parent_mission_id=parent_mid,
+        project_id=proj.id,
+        project_name=proj.name,
+        ticket="parallel ticket",
+        started_at="2026-05-03T00:00:00Z",
+        manager_cost_usd=0.01,
+        sub_missions=[],
+        status=ParallelStatus.COMPLETED,
+        decomposition_kind=DecompositionKind.PARALLEL,
+    )
+    mp.meta.write_text(parent_meta.model_dump_json(indent=2) + "\n")
+    mp.ticket.write_text("parallel ticket")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mission", "retry", parent_mid, "--background"])
+
+    assert result.exit_code != 0
+    assert "background" in result.output.lower()
+
+
+# ----- mission diff ----------------------------------------------------------
+
+
+def test_diff_calls_git_diff(
+    workspace_setup: tuple[Project, Specialist], tmp_path: Path
+) -> None:
+    """diff runs 'git diff <sha>..HEAD' in the worktree directory."""
+    proj, spec = workspace_setup
+    mid = "m-diff-001"
+    fake_worktree = tmp_path / "worktree"
+    fake_worktree.mkdir()
+    _make_single_meta(proj, spec, mid, worktree_path=str(fake_worktree), base_sha="abc1234")
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        calls.append({"cmd": cmd, "cwd": kwargs.get("cwd")})
+        return MagicMock(returncode=0)
+
+    runner = CliRunner()
+    with patch("subprocess.run", side_effect=fake_run):
+        result = runner.invoke(app, ["mission", "diff", mid])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["cmd"] == ["git", "diff", "abc1234..HEAD"]
+    assert calls[0]["cwd"] == fake_worktree
+
+
+def test_diff_stat_flag(
+    workspace_setup: tuple[Project, Specialist], tmp_path: Path
+) -> None:
+    """diff --stat inserts --stat into the git command."""
+    proj, spec = workspace_setup
+    mid = "m-diff-002"
+    fake_worktree = tmp_path / "worktree2"
+    fake_worktree.mkdir()
+    _make_single_meta(proj, spec, mid, worktree_path=str(fake_worktree), base_sha="deadbeef")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        calls.append(cmd)
+        return MagicMock(returncode=0)
+
+    runner = CliRunner()
+    with patch("subprocess.run", side_effect=fake_run):
+        result = runner.invoke(app, ["mission", "diff", mid, "--stat"])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0] == ["git", "diff", "--stat", "deadbeef..HEAD"]
+
+
+def test_diff_workspace_mission_warns_no_crash(
+    workspace_setup: tuple[Project, Specialist],
+) -> None:
+    """diff on a workspace mission (base_sha=None) warns and exits cleanly."""
+    proj, spec = workspace_setup
+    mid = "m-diff-003"
+    _make_single_meta(proj, spec, mid)  # no worktree_path or base_sha
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mission", "diff", mid])
+
+    assert result.exit_code == 0, result.output
+    assert "no base_sha" in result.output or "workspace" in result.output
+
+
+def test_diff_missing_worktree_warns(
+    workspace_setup: tuple[Project, Specialist], tmp_path: Path
+) -> None:
+    """diff warns gracefully when the worktree directory no longer exists."""
+    proj, spec = workspace_setup
+    mid = "m-diff-004"
+    gone = tmp_path / "gone"
+    # Intentionally do NOT create the directory.
+    _make_single_meta(proj, spec, mid, worktree_path=str(gone), base_sha="cafebabe")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mission", "diff", mid])
+
+    assert result.exit_code == 0, result.output
+    assert "no longer exists" in result.output
+
+
+def test_diff_parallel_mission_iterates_sub_missions(
+    workspace_setup: tuple[Project, Specialist], tmp_path: Path
+) -> None:
+    """diff on a parallel parent iterates sub-missions and diffs each one."""
+    proj, spec = workspace_setup
+    parent_mid = "m-diff-par-001"
+    sub1_mid = f"{parent_mid}__task-a"
+    sub2_mid = f"{parent_mid}__task-b"
+
+    # Write parent meta.
+    pmp = mission_paths(proj.id, parent_mid)
+    pmp.root.mkdir(parents=True, exist_ok=True)
+    from workforce.manager import DecompositionKind
+    parent_meta = ParallelMissionMeta(
+        parent_mission_id=parent_mid,
+        project_id=proj.id,
+        project_name=proj.name,
+        ticket="parallel ticket",
+        started_at="2026-05-03T00:00:00Z",
+        manager_cost_usd=0.01,
+        sub_missions=[
+            SubMissionRef(task_id="task-a", mission_id=sub1_mid, specialist=spec.name),
+            SubMissionRef(task_id="task-b", mission_id=sub2_mid, specialist=spec.name),
+        ],
+        status=ParallelStatus.COMPLETED,
+        decomposition_kind=DecompositionKind.PARALLEL,
+    )
+    pmp.meta.write_text(parent_meta.model_dump_json(indent=2) + "\n")
+
+    # Write sub-mission metas with real worktrees.
+    wt1 = tmp_path / "wt1"
+    wt1.mkdir()
+    wt2 = tmp_path / "wt2"
+    wt2.mkdir()
+    _make_single_meta(proj, spec, sub1_mid, worktree_path=str(wt1), base_sha="sha1111")
+    _make_single_meta(proj, spec, sub2_mid, worktree_path=str(wt2), base_sha="sha2222")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        calls.append(cmd)
+        return MagicMock(returncode=0)
+
+    runner = CliRunner()
+    with patch("subprocess.run", side_effect=fake_run):
+        result = runner.invoke(app, ["mission", "diff", parent_mid])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 2
+    # Both sub-missions' base SHAs appear in the git commands.
+    cmds_str = str(calls)
+    assert "sha1111" in cmds_str
+    assert "sha2222" in cmds_str
