@@ -8,8 +8,11 @@ here.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -77,9 +80,283 @@ from .merge import (
 )
 
 
+# ----- Ticket resolution helpers ---------------------------------------------
+
+_TICKET_TEMPLATE = """\
+# workforce ticket
+# ----------------
+# Describe the work to be done below.
+# Lines starting with '#' will be stripped before the ticket is submitted.
+# Save and close the editor to continue. Leave the file blank to abort.
+#
+"""
+
+
+def _read_ticket(
+    ticket: str | None,
+    file: str | None,
+    stdin: bool,
+) -> str:
+    """Resolve ticket text from a positional arg, --file, --stdin, or $EDITOR.
+
+    Exactly one source may be active at a time. Falls back to $EDITOR when
+    none of the explicit sources are provided.
+
+    Args:
+        ticket: Positional ticket argument (or None).
+        file: Path to a file containing the ticket (or None).
+        stdin: If True, read ticket from sys.stdin.
+
+    Returns:
+        Non-empty ticket text.
+    """
+    n_sources = (ticket is not None) + (file is not None) + stdin
+    if n_sources > 1:
+        output.die(
+            "conflicting ticket sources: use at most one of the positional "
+            "ticket argument, --file, or --stdin"
+        )
+    if ticket is not None:
+        if not ticket.strip():
+            output.die("ticket text is empty")
+        return ticket
+    if file is not None:
+        try:
+            text = Path(file).read_text()
+        except OSError as e:
+            output.die(f"could not read --file {file!r}: {e}")
+        if not text.strip():
+            output.die(f"--file {file!r} is empty")
+        return text
+    if stdin:
+        text = sys.stdin.read()
+        if not text.strip():
+            output.die("stdin input is empty")
+        return text
+    # Fall back to $EDITOR. In CI mode this is an error since there's no TTY.
+    if output.is_ci_mode():
+        output.die(
+            "no ticket provided; pass the ticket text as a positional argument, "
+            "via --file PATH, or via --stdin"
+        )
+    return _read_ticket_from_editor()
+
+
+def _read_ticket_from_editor() -> str:
+    """Open $EDITOR with a ticket template; strip comment lines and return content."""
+    editor = os.environ.get("EDITOR", "nano")
+    fd, tmp_path_str = tempfile.mkstemp(suffix=".md", prefix="workforce-ticket-")
+    tmp_path = Path(tmp_path_str)
+    try:
+        os.close(fd)
+        tmp_path.write_text(_TICKET_TEMPLATE)
+        result = subprocess.run([editor, str(tmp_path)])
+        if result.returncode != 0:
+            output.die(f"editor {editor!r} exited with code {result.returncode}")
+        raw = tmp_path.read_text()
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    lines = [ln for ln in raw.splitlines() if not ln.startswith("#")]
+    text = "\n".join(lines).strip()
+    if not text:
+        output.die("ticket is empty (save the editor with content to continue)")
+    return text
+
+
+# ----- CI summary helpers ----------------------------------------------------
+
+
+def _ci_summary_single(meta: MissionMeta) -> dict:
+    """Build the CI JSON summary dict from a completed single MissionMeta."""
+    return {
+        "mission_id": meta.mission_id,
+        "status": meta.status.value,
+        "cost_usd": round(
+            meta.cost_usd + meta.manager_cost_usd + meta.review_cost_usd, 6
+        ),
+        "branch": meta.branch,
+        "commits": len(meta.commits),
+    }
+
+
+def _ci_summary_parallel(
+    parent: ParallelMissionMeta,
+    subs: list[MissionMeta],
+) -> dict:
+    """Build the CI JSON summary dict from a parallel mission result."""
+    total_cost = parent.manager_cost_usd + sum(
+        m.cost_usd + m.review_cost_usd for m in subs
+    )
+    total_commits = sum(len(m.commits) for m in subs)
+    return {
+        "mission_id": parent.parent_mission_id,
+        "status": parent.status.value,
+        "cost_usd": round(total_cost, 6),
+        "branch": None,
+        "commits": total_commits,
+    }
+
+
+def _write_ci_summary(summary: dict, output_file: Path | None) -> None:
+    """Print the CI JSON summary to stdout and optionally to a file."""
+    text = json.dumps(summary)
+    print(text, flush=True)
+    if output_file is not None:
+        output_file.write_text(text + "\n")
+
+
+# ----- Dry-run helpers -------------------------------------------------------
+
+
+def _print_dry_run_direct(
+    specialist_name: str,
+    ticket: str,
+    limits: RunLimits,
+    roster_store: RosterStore,
+) -> None:
+    """Print dry-run summary for a direct (--specialist bypass) dispatch."""
+    output.rule("dry-run")
+    output.info(f"[bold]specialist:[/bold] {specialist_name}")
+    output.info(f"[bold]ticket:[/bold]     {_truncate(ticket, 80)}")
+    output.info(
+        f"[bold]limits:[/bold]     turns={limits.max_turns}  "
+        f"cost=${limits.max_budget_usd:.2f}  wall={limits.max_wall_seconds:.0f}s"
+    )
+    stats = roster_store.load_stats(specialist_name)
+    total_missions = stats.missions_completed + stats.missions_failed
+    if total_missions > 0:
+        avg_cost = stats.total_cost_usd / total_missions
+        output.info(
+            f"[bold]est. cost:[/bold]  ${avg_cost:.4f} "
+            f"([dim]avg over {total_missions} missions[/dim])"
+        )
+    else:
+        output.info(
+            "[bold]est. cost:[/bold]  [dim]no data — first mission for this specialist[/dim]"
+        )
+    output.rule()
+
+
+def _print_dry_run_manager(
+    decomp: Decomposition,
+    resolved: list[tuple[str, str, str]],
+    roster_store: RosterStore,
+) -> None:
+    """Print dry-run summary for a manager-planned dispatch."""
+    output.rule("dry-run: decomposition")
+    output.info(f"[bold]kind:[/bold] {decomp.kind.value}    [dim]{decomp.rationale}[/dim]")
+
+    by_task = {tid: (name, action) for tid, name, action in resolved}
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("task")
+    table.add_column("specialist")
+    table.add_column("owns", overflow="fold")
+    table.add_column("depends_on")
+    table.add_column("turns", justify="right")
+    table.add_column("description", overflow="fold")
+    for t in decomp.tasks:
+        owns = ", ".join(t.owns_paths) if t.owns_paths else "[dim]-[/dim]"
+        deps = ", ".join(t.depends_on) if t.depends_on else "[dim]-[/dim]"
+        spec_name, _ = by_task.get(t.id, ("[red]?[/red]", ""))
+        table.add_row(
+            t.id, spec_name, owns, deps,
+            str(t.estimated_turns), _truncate(t.description, 60),
+        )
+    output.print_table(table)
+
+    # Estimated cost: sum of per-specialist averages.
+    spec_names = list({name for _, name, _ in resolved})
+    est_total: float | None = None
+    for spec_name in spec_names:
+        stats = roster_store.load_stats(spec_name)
+        total_m = stats.missions_completed + stats.missions_failed
+        if total_m > 0:
+            avg = stats.total_cost_usd / total_m
+            est_total = (est_total or 0.0) + avg
+    if est_total is not None:
+        output.info(f"[bold]est. total cost:[/bold] ${est_total:.4f}")
+    else:
+        output.info("[bold]est. total cost:[/bold] [dim]no data[/dim]")
+    output.rule()
+
+
+# ----- Specialist onboarding wizard ------------------------------------------
+
+
+def _onboard_specialist(
+    specialist: str,
+    proj: project_mod.Project,
+    roster_store: RosterStore,
+    project_store: project_mod.ProjectStore,
+    *,
+    skip_prompts: bool,
+) -> project_mod.Project:
+    """Ensure *specialist* exists and is assigned to *proj*.
+
+    In non-interactive mode (``skip_prompts=True``), dies with a clear message
+    when either condition is not met. In interactive mode, offers to hire from
+    a template and/or assign to the project.
+
+    Args:
+        specialist: Name of the specialist to check.
+        proj: The project the specialist must be assigned to.
+        roster_store: Roster store used to look up / save specialists.
+        project_store: Project store used to save assignment changes.
+        skip_prompts: When True, die instead of prompting.
+
+    Returns:
+        The (possibly updated) Project after any assignment changes.
+    """
+    # Step 1: ensure specialist exists in the roster.
+    if not roster_store.exists(specialist):
+        if skip_prompts:
+            output.die(f"no such specialist: {specialist!r}")
+        templates_list = "/".join(sorted(specialist_mod.TEMPLATES))
+        choice = typer.prompt(
+            f"Specialist {specialist!r} doesn't exist. "
+            f"Hire from template? [{templates_list}/skip]",
+            default="skip",
+        ).strip().lower()
+        if choice in specialist_mod.TEMPLATES:
+            new_spec = specialist_mod.Specialist.from_template(specialist, choice)
+            roster_store.save(new_spec)
+            output.success(f"hired {specialist!r} from template {choice!r}")
+        else:
+            output.die(f"no such specialist: {specialist!r}")
+
+    # Step 2: ensure specialist is assigned to this project.
+    if specialist not in proj.assigned_specialists:
+        if skip_prompts:
+            output.die(
+                f"{specialist!r} isn't assigned to {proj.name}. "
+                f"Run `workforce project assign {proj.name} {specialist}` first."
+            )
+        answer = typer.confirm(
+            f"Specialist {specialist!r} isn't assigned to {proj.name!r}. Assign now?",
+            default=True,
+        )
+        if answer:
+            updated = proj.model_copy(
+                update={
+                    "assigned_specialists": list(proj.assigned_specialists) + [specialist]
+                }
+            )
+            project_store.save(updated, overwrite=True)
+            output.success(f"assigned {specialist!r} to {proj.name!r}")
+            return updated
+        else:
+            output.die(
+                f"{specialist!r} isn't assigned to {proj.name}. "
+                f"Run `workforce project assign {proj.name} {specialist}` first."
+            )
+
+    return proj
+
+
 def dispatch_command(
     project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
-    ticket: str = typer.Argument(..., help="Ticket text in quotes."),
+    ticket: str | None = typer.Argument(None, help="Ticket text in quotes."),
     specialist: str | None = typer.Option(
         None,
         "--specialist",
@@ -155,6 +432,36 @@ def dispatch_command(
         None, "--mission-id", hidden=True,
         help="Internal: pre-allocated mission id used by --window/--background forks.",
     ),
+    file: str | None = typer.Option(
+        None, "--file", metavar="PATH",
+        help="Read ticket text from PATH instead of the positional argument.",
+    ),
+    stdin: bool = typer.Option(
+        False, "--stdin",
+        help="Read ticket text from stdin.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help=(
+            "Plan the work but do not dispatch. "
+            "Prints the decomposition and estimated cost, then exits."
+        ),
+    ),
+    ci: bool = typer.Option(
+        False, "--ci",
+        help=(
+            "Non-interactive: skip prompts, suppress ANSI output, "
+            "and write a JSON summary to stdout on completion."
+        ),
+    ),
+    output_file: str | None = typer.Option(
+        None, "--output-file", metavar="PATH",
+        help="With --ci: also write the JSON summary to PATH.",
+    ),
+    require_review: bool = typer.Option(
+        False, "--require-review",
+        help="With --ci: fail with exit code 2 if --review was not also passed.",
+    ),
 ) -> None:
     """Dispatch a mission. The Manager plans it, then it runs.
 
@@ -163,13 +470,35 @@ def dispatch_command(
     to one specialist. Pass --specialist to skip the Manager and dispatch
     directly to a named specialist (cheaper for tiny tickets).
     """
+    # CI mode: plain-text output, implied --yes.
+    if ci:
+        output.set_ci_mode()
+        yes = True
+
+    # --require-review is only meaningful when --ci and --review are both set.
+    if require_review and not review:
+        output.die(
+            "--require-review requires --review; pass --review to enable code review",
+            code=2,
+        )
+
+    # --dry-run is incompatible with detached modes.
+    if dry_run and (window or background):
+        output.die("--dry-run is not compatible with --window or --background")
+
+    # Resolve output_file path early (before anything that might exit).
+    output_file_path: Path | None = Path(output_file) if output_file is not None else None
+
+    # Resolve ticket text from whichever source was specified.
+    ticket_text = _read_ticket(ticket, file, stdin)
+
     if window and background:
         output.die("--window and --background are mutually exclusive")
     if branch is not None and merge_into is not None:
         output.die("--branch and --merge-into are mutually exclusive (--branch sets the merge target)")
     if window or background:
         _dispatch_detached(
-            project_ref=project_ref, ticket=ticket, specialist=specialist,
+            project_ref=project_ref, ticket=ticket_text, specialist=specialist,
             mission_id_override=mission_id_override,
             max_turns=max_turns, max_cost=max_cost, max_wall=max_wall,
             review=review, max_revisions=max_revisions,
@@ -180,6 +509,9 @@ def dispatch_command(
             auto_staff=auto_staff,
             panels=panels,
             yes=yes,
+            ci=ci,
+            output_file=output_file,
+            require_review=require_review,
         )
         return
 
@@ -245,21 +577,28 @@ def dispatch_command(
 
     # Bypass: --specialist X skips the Manager entirely.
     if specialist is not None:
-        if not roster_store.exists(specialist):
-            output.die(f"no such specialist: {specialist!r}")
-        if specialist not in proj.assigned_specialists:
-            output.die(
-                f"{specialist!r} isn't assigned to {proj.name}. "
-                f"Run `workforce project assign {proj.name} {specialist}` first."
-            )
+        # Onboarding wizard: ensure the specialist exists and is assigned.
+        # When yes=True (set by --yes or --ci), skip the wizard and die fast.
+        proj = _onboard_specialist(
+            specialist, proj, roster_store, project_store,
+            skip_prompts=yes,
+        )
+
+        # Dry-run: print what would run and the estimated cost, then exit.
+        if dry_run:
+            _print_dry_run_direct(specialist, ticket_text, limits, roster_store)
+            return
+
         _dispatch_direct(
-            proj, ticket, roster_store.load(specialist),
+            proj, ticket_text, roster_store.load(specialist),
             roster_store, project_store, worktree_manager, limits,
             auto_merge=auto_merge or merge_into is not None,
             merge_into=merge_into,
             review=review, max_revisions=max_revisions,
             mission_id=mission_id_override,
             base_branch=branch,
+            ci=ci,
+            output_file=output_file_path,
         )
         return
 
@@ -269,13 +608,16 @@ def dispatch_command(
     # Manager validating non-overlapping `owns_paths` at plan time and the
     # `can_use_tool` callback enforcing those lanes at write time.
     _dispatch_with_manager(
-        proj, ticket, roster_store, project_store, worktree_manager,
+        proj, ticket_text, roster_store, project_store, worktree_manager,
         limits=limits, skip_confirm=yes, auto_staff=auto_staff,
         auto_merge=auto_merge or merge_into is not None,
         merge_into=merge_into,
         panels=panels,
         review=review, max_revisions=max_revisions,
         base_branch=branch,
+        dry_run=dry_run,
+        ci=ci,
+        output_file=output_file_path,
     )
 
 
@@ -294,6 +636,8 @@ def _dispatch_direct(
     max_revisions: int = 3,
     mission_id: str | None = None,
     base_branch: str | None = None,
+    ci: bool = False,
+    output_file: Path | None = None,
 ) -> None:
     """Single specialist, no Manager. The --specialist X bypass."""
     output.info(
@@ -322,7 +666,11 @@ def _dispatch_direct(
     _print_summary(meta)
     if auto_merge:
         _run_auto_merge_single(proj, meta, target=merge_into)
+    if ci:
+        _write_ci_summary(_ci_summary_single(meta), output_file)
     if meta.status is not MissionStatus.COMPLETED:
+        if ci and meta.status is MissionStatus.REVIEW_REJECTED:
+            raise typer.Exit(code=2)
         raise typer.Exit(code=1)
 
 
@@ -344,6 +692,9 @@ def _dispatch_detached(
     auto_staff: bool = True,
     panels: bool = False,
     yes: bool = False,
+    ci: bool = False,
+    output_file: str | None = None,
+    require_review: bool = False,
 ) -> None:
     """`--window` / `--background` shared path.
 
@@ -389,6 +740,12 @@ def _dispatch_detached(
         argv += ["--panels"]
     if yes:
         argv += ["--yes"]
+    if ci:
+        argv += ["--ci"]
+    if output_file is not None:
+        argv += ["--output-file", output_file]
+    if require_review:
+        argv += ["--require-review"]
 
     # Detach so the child survives this process exiting. stdout/stderr go to
     # /dev/null — the tail window renders from events.jsonl, not stdout.
@@ -439,6 +796,9 @@ def _dispatch_with_manager(
     review: bool = False,
     max_revisions: int = 3,
     base_branch: str | None = None,
+    dry_run: bool = False,
+    ci: bool = False,
+    output_file: Path | None = None,
 ) -> None:
     """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
@@ -468,12 +828,30 @@ def _dispatch_with_manager(
         output.warn("interrupted")
         raise typer.Exit(code=130) from None
     except ManagerError as e:
-        output.die(f"manager: {e}")
+        # Exit code 4 = manager error in CI mode.
+        output.die(f"manager: {e}", code=4 if ci else 1)
 
     output.info(
         f"[dim]manager: kind={decomp.kind.value}  cost=${manager_cost:.4f}  "
         f"({decomp.rationale})[/dim]"
     )
+
+    # Dry-run: resolve specialists for display, print table + cost, then exit.
+    if dry_run:
+        try:
+            resolved = parallel.resolve_task_specialists(
+                decomp,
+                parent_mission_id=mission.generate_mission_id(),
+                project=proj,
+                roster_store=roster_store,
+                project_store=project_store,
+                auto_staff=auto_staff,
+            )
+        except ResolutionError as e:
+            output.die(str(e))
+        rows = [(r.task.id, r.specialist.name, r.staffing_action) for r in resolved]
+        _print_dry_run_manager(decomp, rows, roster_store)
+        return
 
     # Branch on kind.
     if decomp.kind is DecompositionKind.SINGLE:
@@ -484,6 +862,8 @@ def _dispatch_with_manager(
             auto_merge=auto_merge, merge_into=merge_into,
             review=review, max_revisions=max_revisions,
             base_branch=base_branch,
+            ci=ci,
+            output_file=output_file,
         )
     else:
         _dispatch_after_manager_parallel(
@@ -494,6 +874,8 @@ def _dispatch_with_manager(
             panels=panels,
             review=review, max_revisions=max_revisions,
             base_branch=base_branch,
+            ci=ci,
+            output_file=output_file,
         )
 
 
@@ -513,6 +895,8 @@ def _dispatch_after_manager_single(
     review: bool = False,
     max_revisions: int = 3,
     base_branch: str | None = None,
+    ci: bool = False,
+    output_file: Path | None = None,
 ) -> None:
     """Manager said single. Use its specialist suggestion, dispatch one mission."""
     if not decomp.tasks:
@@ -574,7 +958,11 @@ def _dispatch_after_manager_single(
     _print_summary(meta)
     if auto_merge:
         _run_auto_merge_single(proj, meta, target=merge_into)
+    if ci:
+        _write_ci_summary(_ci_summary_single(meta), output_file)
     if meta.status is not MissionStatus.COMPLETED:
+        if ci and meta.status is MissionStatus.REVIEW_REJECTED:
+            raise typer.Exit(code=2)
         raise typer.Exit(code=1)
 
 
@@ -596,6 +984,8 @@ def _dispatch_after_manager_parallel(
     review: bool = False,
     max_revisions: int = 3,
     base_branch: str | None = None,
+    ci: bool = False,
+    output_file: Path | None = None,
 ) -> None:
     """Manager said parallel/sequential. Confirm-loop here, then orchestrate."""
     parent_mission_id = mission.generate_mission_id()
@@ -663,6 +1053,8 @@ def _dispatch_after_manager_parallel(
                 auto_merge=auto_merge, merge_into=merge_into,
                 review=review, max_revisions=max_revisions,
                 base_branch=base_branch,
+                ci=ci,
+                output_file=output_file,
             )
             return
         # Loop back: validate + resolve + confirm the new plan.
@@ -725,6 +1117,9 @@ def _dispatch_after_manager_parallel(
 
     if auto_merge:
         _run_auto_merge_parallel(proj, result.parent_meta, result.sub_metas, target=merge_into)
+
+    if ci:
+        _write_ci_summary(_ci_summary_parallel(result.parent_meta, result.sub_metas), output_file)
 
     if result.parent_meta.status is not ParallelStatus.COMPLETED:
         raise typer.Exit(code=1)
