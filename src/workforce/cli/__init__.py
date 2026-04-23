@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, dispatch, manage, mission, project, roster
+from . import cleanup, dispatch, manage, memory, mission, project, roster
 
 app = typer.Typer(
     name="workforce",
@@ -107,6 +107,21 @@ mission_sub.command("tail")(mission.mission_tail)
 mission_sub.command("clean")(cleanup.mission_clean)
 mission_sub.command("prune")(cleanup.mission_prune)
 app.add_typer(mission_sub)
+
+# ----- memory ---------------------------------------------------------------
+
+memory_sub = typer.Typer(
+    name="memory",
+    help="Inspect and manage specialist memory files.",
+    no_args_is_help=True,
+)
+memory_sub.command("show")(memory.memory_show)
+memory_sub.command("search")(memory.memory_search)
+memory_sub.command("export")(memory.memory_export)
+memory_sub.command("import")(memory.memory_import)
+memory_sub.command("compact")(memory.memory_compact)
+app.add_typer(memory_sub)
+
 
 branches_sub = typer.Typer(
     name="branches",
