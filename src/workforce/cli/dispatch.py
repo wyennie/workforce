@@ -32,6 +32,7 @@ from workforce import (
     parallel,
     paths,
 )
+from workforce.config import load_global_config
 from workforce import (
     project as project_mod,
 )
@@ -78,6 +79,7 @@ from .merge import (
 
 
 def dispatch_command(
+    ctx: typer.Context,
     project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
     ticket: str = typer.Argument(..., help="Ticket text in quotes."),
     specialist: str | None = typer.Option(
@@ -184,6 +186,15 @@ def dispatch_command(
         return
 
     roster_store, project_store, worktree_manager = _stores()
+
+    # Apply global-config defaults for flags the user did not explicitly pass.
+    from click import ParameterSource
+
+    _gcfg = load_global_config()
+    if ctx.get_parameter_source("max_turns") is ParameterSource.DEFAULT and _gcfg.max_turns is not None:
+        max_turns = _gcfg.max_turns
+    if ctx.get_parameter_source("max_cost") is ParameterSource.DEFAULT and _gcfg.max_cost is not None:
+        max_cost = _gcfg.max_cost
 
     try:
         proj = project_store.resolve(project_ref)

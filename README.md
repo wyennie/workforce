@@ -112,6 +112,27 @@ Pass `--branch dev` on `dispatch` or `manage` to keep work on a staging branch. 
 
 With `--review`, after each sub-mission a Reviewer specialist (read-only) inspects the diff. On rejection, the original specialist re-runs with the Reviewer's feedback. Capped at `--max-revisions` rounds (default 3).
 
+## Configuration
+
+Global defaults live in `~/.workforce/config.toml`. All keys are optional; CLI flags always take precedence.
+
+```toml
+default_model = "claude-sonnet-4-5"
+max_turns = 80
+max_cost  = 10.0
+```
+
+Manage it with the built-in subcommands:
+
+```bash
+workforce config get                  # show current settings
+workforce config set max_turns 80     # write a value
+workforce config set max_cost 10.0
+workforce config set default_model "claude-sonnet-4-5"
+```
+
+Or edit `~/.workforce/config.toml` directly.
+
 ## Commit policy
 
 Specialists commit their own work as they go, in the worktree's branch. Conventional-commits style, authored as you (Workforce never overrides `user.name`/`user.email`). A per-specialist `Co-Authored-By: <name> <name>@workforce.local` trailer credits which specialist did the work.
