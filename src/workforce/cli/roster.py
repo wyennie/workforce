@@ -7,6 +7,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from workforce import output, paths
+from ._completions import complete_specialist
 from workforce.project import ProjectStore
 from workforce.specialist import (
     DEFAULT_MODEL,
@@ -25,7 +26,7 @@ def _store() -> RosterStore:
 
 
 def hire(
-    name: str = typer.Argument(..., help="Specialist name (lowercase id)."),
+    name: str = typer.Argument(..., help="Specialist name (lowercase id).", autocompletion=complete_specialist),
     role: str | None = typer.Option(
         None,
         "--role",
@@ -67,7 +68,7 @@ def hire(
 
 
 def fire(
-    name: str = typer.Argument(..., help="Specialist name."),
+    name: str = typer.Argument(..., help="Specialist name.", autocompletion=complete_specialist),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip confirmation prompt."
     ),
@@ -123,7 +124,7 @@ def roster() -> None:
     output.print_table(table)
 
 
-def show(name: str = typer.Argument(..., help="Specialist name.")) -> None:
+def show(name: str = typer.Argument(..., help="Specialist name.", autocompletion=complete_specialist)) -> None:
     """Show one specialist including their memory (cross-project + per-project)."""
     store = _store()
     try:
@@ -179,7 +180,7 @@ def show(name: str = typer.Argument(..., help="Specialist name.")) -> None:
 
 def refresh(
     name: str | None = typer.Argument(
-        None, help="Specialist to refresh; omit for all.",
+        None, help="Specialist to refresh; omit for all.", autocompletion=complete_specialist,
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:

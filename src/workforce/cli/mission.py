@@ -18,6 +18,7 @@ from workforce import project as project_mod
 from workforce.mission import MissionMeta
 from workforce.parallel import ParallelMissionMeta
 
+from ._completions import complete_mission_id
 from ._common import (
     _PARALLEL_STATUS_STYLES,
     _STATUS_STYLES,
@@ -88,7 +89,7 @@ def missions_command(
 
 
 def replay_command(
-    mission_id: str = typer.Argument(..., help="Mission id."),
+    mission_id: str = typer.Argument(..., help="Mission id.", autocompletion=complete_mission_id),
     show_thinking: bool = typer.Option(
         False, "--show-thinking", help="Include thinking blocks."
     ),
@@ -213,7 +214,7 @@ def _render_replay_event(evt: dict[str, Any], *, show_thinking: bool) -> None:
 # ----- show -----------------------------------------------------------------
 
 
-def mission_show(mission_id: str = typer.Argument(..., help="Mission id.")) -> None:
+def mission_show(mission_id: str = typer.Argument(..., help="Mission id.", autocompletion=complete_mission_id)) -> None:
     """Show one mission's details. Works for single, parent (parallel), or sub missions."""
     paths.ensure_layout()
     proj, meta = _find_mission(mission_id)
@@ -341,7 +342,7 @@ def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) ->
 
 
 def mission_tail(
-    mission_id: str = typer.Argument(..., help="Mission id."),
+    mission_id: str = typer.Argument(..., help="Mission id.", autocompletion=complete_mission_id),
     show_thinking: bool = typer.Option(
         False, "--show-thinking", help="Include thinking blocks."
     ),
