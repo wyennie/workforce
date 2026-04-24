@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from workforce import manager, mission
+from workforce import manager, mission, output
 from workforce.manager import (
     CONTRACT_TASK_ID,
     Decomposition,
@@ -666,6 +666,31 @@ async def _run_sub_missions(
             excludes_paths=r.task.excludes_paths,
         )
 
+    async def run_one_with_retries(
+        r: _ResolvedTask,
+        start_point: str | None,
+        additional_merges: list[str],
+    ) -> MissionMeta:
+        """Wrap run_one with exponential-backoff retry on ERROR or WALL_TIMEOUT."""
+        max_retries = limits.max_retries if limits is not None else 0
+        backoff_base = limits.retry_backoff_base if limits is not None else 30.0
+        attempt = 0
+        while True:
+            meta = await run_one(r, start_point, additional_merges)
+            if meta.status not in (MissionStatus.ERROR, MissionStatus.WALL_TIMEOUT):
+                return meta
+            if max_retries <= 0:
+                return meta
+            attempt += 1
+            if attempt > max_retries:
+                return meta
+            sleep_secs = backoff_base * (2 ** (attempt - 1))
+            output.warn(
+                f"retrying {r.task.id} (attempt {attempt}/{max_retries}, "
+                f"sleeping {sleep_secs:.0f}s)"
+            )
+            await asyncio.sleep(sleep_secs)
+
     for wave in waves:
         wave_resolved = [by_task_id[t.id] for t in wave]
         coros = []
@@ -696,7 +721,7 @@ async def _run_sub_missions(
                 start_point = completed_branches[primary]
                 additional_merges = [completed_branches[d] for d in real_deps[1:]]
 
-            coros.append(run_one(r, start_point, additional_merges))
+            coros.append(run_one_with_retries(r, start_point, additional_merges))
 
         # Save synthetic skip metas now so they show up in mission show.
         for meta in skips:

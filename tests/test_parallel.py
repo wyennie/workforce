@@ -7,7 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from claude_agent_sdk import (
@@ -33,7 +33,7 @@ from workforce.parallel import (
     resolve_task_specialists,
 )
 from workforce.project import Project, ProjectStore
-from workforce.runner import RunResult, RunStatus
+from workforce.runner import RunLimits, RunResult, RunStatus
 from workforce.specialist import RosterStore, Specialist
 from workforce.worktree import WorktreeManager
 
@@ -1213,3 +1213,155 @@ def test_topological_waves_single_chain() -> None:
     assert waves[0][0].id == "a"
     assert waves[1][0].id == "b"
     assert waves[2][0].id == "c"
+
+
+# ----- retry logic -----------------------------------------------------------
+
+
+def _decomp_one_ws_task() -> Decomposition:
+    """Single-task decomposition for workspace retry tests."""
+    return Decomposition(
+        ticket="t",
+        kind=DecompositionKind.SINGLE,
+        rationale="r",
+        contract=Contract(needed=False, path="", body=""),
+        tasks=[
+            Task(
+                id="impl",
+                description="do the thing",
+                owns_paths=["src/**"],
+                depends_on=[],
+                suggested_specialist="aria",
+            ),
+        ],
+        merge_order=["impl"],
+    )
+
+
+def _failing_runner(fail_count: int, cost: float = 0.10) -> Any:
+    """Return a run_specialist fake that returns ERROR fail_count times then COMPLETED."""
+    calls: list[int] = [0]
+
+    async def fake(**kwargs: Any) -> RunResult:
+        n = calls[0]
+        calls[0] += 1
+        if n < fail_count:
+            return RunResult(
+                status=RunStatus.ERROR, final=None,
+                cost_usd=0.0, duration_seconds=1.0, turn_count=0,
+                error_detail="simulated failure",
+            )
+        result = ResultMessage(
+            subtype="success", duration_ms=1000, duration_api_ms=900,
+            is_error=False, num_turns=3, session_id="s-retry-test",
+            stop_reason=None, total_cost_usd=cost, usage=None, result=None,
+            structured_output=None, model_usage=None, permission_denials=None,
+            errors=None, uuid=None,
+        )
+        return RunResult(
+            status=RunStatus.COMPLETED, final=result,
+            cost_usd=cost, duration_seconds=1.0, turn_count=3,
+        )
+
+    return fake
+
+
+def test_retry_succeeds_on_second_attempt(
+    workspace_stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """A task that fails once succeeds on the first retry; parent ends COMPLETED."""
+    rs, ps, wm, proj = workspace_stores_and_project
+    decomp = _decomp_one_ws_task()
+    sleep_mock = AsyncMock()
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        with patch.object(runner_mod, "run_specialist", _failing_runner(fail_count=1)):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                with patch("asyncio.sleep", sleep_mock):
+                    result = asyncio.run(
+                        dispatch_parallel(
+                            project=proj,
+                            ticket="do the thing",
+                            roster_store=rs,
+                            project_store=ps,
+                            worktree_manager=wm,
+                            sub_mission_limits=RunLimits(max_retries=1),
+                            confirm=lambda _d, _r: True,
+                            parent_mission_id="m-retry-ok",
+                        )
+                    )
+
+    assert result.parent_meta.status is ParallelStatus.COMPLETED
+    assert len(result.sub_metas) == 1
+    assert result.sub_metas[0].status is MissionStatus.COMPLETED
+    # One failed attempt → one sleep call before the successful retry
+    assert sleep_mock.call_count == 1
+    sleep_mock.assert_called_once_with(30.0)  # base_backoff * 2^0
+
+
+def test_retry_exhausted_marks_failed(
+    workspace_stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """A task that keeps failing exhausts max_retries and the parent ends FAILED."""
+    rs, ps, wm, proj = workspace_stores_and_project
+    decomp = _decomp_one_ws_task()
+    sleep_mock = AsyncMock()
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        # fail_count=2 means it fails on both the initial run and the single retry
+        with patch.object(runner_mod, "run_specialist", _failing_runner(fail_count=2)):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                with patch("asyncio.sleep", sleep_mock):
+                    result = asyncio.run(
+                        dispatch_parallel(
+                            project=proj,
+                            ticket="do the thing",
+                            roster_store=rs,
+                            project_store=ps,
+                            worktree_manager=wm,
+                            sub_mission_limits=RunLimits(max_retries=1),
+                            confirm=lambda _d, _r: True,
+                            parent_mission_id="m-retry-fail",
+                        )
+                    )
+
+    assert result.parent_meta.status is not ParallelStatus.COMPLETED
+    assert len(result.sub_metas) == 1
+    assert result.sub_metas[0].status is MissionStatus.ERROR
+    # max_retries=1: one retry sleep, then give up
+    assert sleep_mock.call_count == 1
+
+
+def test_retry_backoff_scales(
+    workspace_stores_and_project: tuple[RosterStore, ProjectStore, WorktreeManager, Project],
+) -> None:
+    """Retry sleep durations follow retry_backoff_base * 2^(attempt-1) doubling."""
+    rs, ps, wm, proj = workspace_stores_and_project
+    decomp = _decomp_one_ws_task()
+    sleep_mock = AsyncMock()
+
+    with patch.object(manager, "run_manager", _fake_manager(decomp)):
+        # fail 3 times then succeed; max_retries=3 so attempts 1/2/3 each sleep
+        with patch.object(runner_mod, "run_specialist", _failing_runner(fail_count=3)):
+            with patch.object(mission, "extract_memory_delta", _no_memory):
+                with patch("asyncio.sleep", sleep_mock):
+                    result = asyncio.run(
+                        dispatch_parallel(
+                            project=proj,
+                            ticket="do the thing",
+                            roster_store=rs,
+                            project_store=ps,
+                            worktree_manager=wm,
+                            sub_mission_limits=RunLimits(max_retries=3, retry_backoff_base=30.0),
+                            confirm=lambda _d, _r: True,
+                            parent_mission_id="m-retry-backoff",
+                        )
+                    )
+
+    assert result.parent_meta.status is ParallelStatus.COMPLETED
+    assert sleep_mock.call_count == 3
+    # attempt 1: 30.0 * 2^0 = 30.0
+    # attempt 2: 30.0 * 2^1 = 60.0
+    # attempt 3: 30.0 * 2^2 = 120.0
+    calls = [c.args[0] for c in sleep_mock.call_args_list]
+    assert calls == [30.0, 60.0, 120.0]

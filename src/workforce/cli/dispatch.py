@@ -118,6 +118,8 @@ def dispatch_command(
     max_wall: float = typer.Option(
         1800.0, "--max-wall", help="Hard cap on wall-clock seconds per sub-mission."
     ),
+    max_retries: int = typer.Option(0, "--max-retries", help="Retry failed sub-missions N times."),
+    retry_backoff: float = typer.Option(30.0, "--retry-backoff", help="Base backoff seconds between retries."),
     yes: bool = typer.Option(
         False, "--yes", "-y",
         help="Skip the decomposition confirmation prompt.",
@@ -240,7 +242,8 @@ def dispatch_command(
         auto_merge = True
 
     limits = RunLimits(
-        max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall
+        max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall,
+        max_retries=max_retries, retry_backoff_base=retry_backoff,
     )
 
     # Bypass: --specialist X skips the Manager entirely.
