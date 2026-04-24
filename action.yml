@@ -1,0 +1,143 @@
+name: Workforce Dispatch
+description: >
+  Dispatch a mission to a Workforce specialist and return the mission result.
+  Installs workforce-ai, runs `workforce dispatch --ci --output-file`, and
+  exposes mission-id, status, and branch as step outputs.
+
+inputs:
+  project:
+    description: >
+      Path to the project directory that has already been registered with
+      `workforce project add`. Passed as the first positional argument to
+      `workforce dispatch`.
+    required: true
+
+  ticket:
+    description: >
+      The ticket text to dispatch. Mutually exclusive with ticket-file; at
+      least one must be provided.
+    required: false
+
+  ticket-file:
+    description: >
+      Path to a Markdown file containing the ticket. Mutually exclusive with
+      ticket; at least one must be provided.
+    required: false
+
+  specialist:
+    description: >
+      Name of a specific specialist to assign. When omitted the Manager picks
+      the best available specialist automatically.
+    required: false
+
+  auto-merge:
+    description: >
+      Set to 'true' to merge the mission branch into the base branch after a
+      successful run. Defaults to false so you can inspect the diff first.
+    required: false
+    default: 'false'
+
+  open-pr:
+    description: >
+      Set to 'true' to open a GitHub pull request for the mission branch
+      after a successful run.
+    required: false
+    default: 'false'
+
+  max-cost:
+    description: >
+      Maximum spend cap for this mission in USD (e.g. '2.50'). The mission
+      aborts if the accumulated cost would exceed this value.
+    required: false
+
+  anthropic-api-key:
+    description: >
+      Anthropic API key used by the specialist subprocess. Pass the secret as
+      `${{ secrets.ANTHROPIC_API_KEY }}` — never hard-code it.
+    required: true
+
+outputs:
+  mission-id:
+    description: Unique mission identifier (e.g. m-20260512-120000-abcd)
+    value: ${{ steps.parse-result.outputs.mission-id }}
+
+  status:
+    description: >
+      Terminal status of the mission: completed | failed | errored |
+      review_rejected
+    value: ${{ steps.parse-result.outputs.status }}
+
+  branch:
+    description: Git branch created for this mission (e.g. workforce/m-20260512-…)
+    value: ${{ steps.parse-result.outputs.branch }}
+
+runs:
+  using: composite
+
+  steps:
+    # ── 1. Install workforce ────────────────────────────────────────────────
+    - name: Install workforce-ai
+      shell: bash
+      run: pip install --quiet workforce-ai
+
+    # ── 2. Build the dispatch command and run it ────────────────────────────
+    - name: Dispatch mission
+      id: dispatch
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        set -euo pipefail
+        OUTPUT_FILE="$(mktemp /tmp/workforce-result-XXXXXXXX.json)"
+        echo "output-file=${OUTPUT_FILE}" >> "$GITHUB_OUTPUT"
+
+        ARGS=(workforce dispatch "${{ inputs.project }}" --ci --output-file "${OUTPUT_FILE}")
+
+        # Inline ticket vs. file
+        if [[ -n "${{ inputs.ticket }}" ]]; then
+          ARGS+=("${{ inputs.ticket }}")
+        elif [[ -n "${{ inputs.ticket-file }}" ]]; then
+          ARGS+=(--file "${{ inputs.ticket-file }}")
+        else
+          echo "::error::Either 'ticket' or 'ticket-file' must be provided."
+          exit 1
+        fi
+
+        [[ -n "${{ inputs.specialist }}" ]] && ARGS+=(--specialist "${{ inputs.specialist }}")
+        [[ "${{ inputs.auto-merge }}" == "true" ]] && ARGS+=(--auto-merge)
+        [[ "${{ inputs.open-pr }}"   == "true" ]] && ARGS+=(--open-pr)
+        [[ -n "${{ inputs.max-cost }}" ]] && ARGS+=(--max-cost "${{ inputs.max-cost }}")
+
+        "${ARGS[@]}"
+
+    # ── 3. Parse the JSON result file and expose outputs ───────────────────
+    - name: Parse result
+      id: parse-result
+      shell: bash
+      if: always()
+      env:
+        OUTPUT_FILE: ${{ steps.dispatch.outputs.output-file }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${OUTPUT_FILE}" || ! -f "${OUTPUT_FILE}" ]]; then
+          echo "::warning::workforce did not write an output file; mission may have failed to start."
+          printf 'mission-id=\nstatus=errored\nbranch=\n' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        python3 - "${OUTPUT_FILE}" "${GITHUB_OUTPUT}" <<'PYEOF'
+        import json, sys
+
+        result_path, github_output = sys.argv[1], sys.argv[2]
+        with open(result_path) as fh:
+            d = json.load(fh)
+
+        lines = (
+            "mission-id=" + d.get("mission_id", "") + "\n"
+            + "status="   + d.get("status", "errored") + "\n"
+            + "branch="   + d.get("branch", "") + "\n"
+        )
+        with open(github_output, "a") as fh:
+            fh.write(lines)
+        PYEOF

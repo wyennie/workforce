@@ -1,0 +1,219 @@
+# workforce-example.yml — Three real-world usage patterns for the Workforce action.
+#
+# Copy the pattern(s) you need into your own repository and adjust accordingly.
+# All three patterns share one requirement: add ANTHROPIC_API_KEY as a repo/org
+# secret in Settings → Secrets and variables → Actions.
+
+name: Workforce example workflows
+
+on:
+  # ── Pattern 1: Dispatch when an issue is labeled 'workforce-dispatch' ───
+  issues:
+    types: [labeled]
+
+  # ── Pattern 2: Dispatch a reviewer on every new PR ───────────────────────
+  pull_request:
+    types: [opened]
+
+  # ── Pattern 3: Manual dispatch with a free-text ticket ───────────────────
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: "Ticket text to dispatch to Workforce"
+        required: true
+        type: string
+      specialist:
+        description: "Specialist name (leave blank for auto-assign)"
+        required: false
+        type: string
+      auto_merge:
+        description: "Auto-merge the mission branch on success"
+        required: false
+        type: boolean
+        default: false
+
+# ---------------------------------------------------------------------------
+# Pattern 1 — Issue labeled 'workforce-dispatch'
+# ---------------------------------------------------------------------------
+# When a maintainer adds the 'workforce-dispatch' label to an issue, Workforce
+# picks it up, dispatches a mission using the issue body as the ticket, and
+# posts a comment with the mission ID and branch.
+# ---------------------------------------------------------------------------
+jobs:
+  dispatch-from-issue:
+    name: Dispatch from labeled issue
+    if: github.event_name == 'issues' && github.event.label.name == 'workforce-dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # push the mission branch
+      issues: write        # post the result comment
+      pull-requests: write # open a PR if needed
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Write the issue body to a temp file so we can pass it via --ticket-file
+      - name: Write issue body to file
+        run: |
+          cat > /tmp/ticket.md <<'TICKET'
+          ${{ github.event.issue.body }}
+          TICKET
+
+      - name: Dispatch Workforce mission
+        id: workforce
+        uses: ./  # use the action.yml at the root of this repo
+        with:
+          project: ${{ github.workspace }}
+          ticket-file: /tmp/ticket.md
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Comment result on issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const missionId = '${{ steps.workforce.outputs.mission-id }}';
+            const status    = '${{ steps.workforce.outputs.status }}';
+            const branch    = '${{ steps.workforce.outputs.branch }}';
+
+            const icon = status === 'completed' ? '✅' : '❌';
+            const body = [
+              `${icon} **Workforce mission ${status}**`,
+              '',
+              `| Field      | Value |`,
+              `|------------|-------|`,
+              `| Mission ID | \`${missionId}\` |`,
+              `| Status     | \`${status}\` |`,
+              `| Branch     | \`${branch}\` |`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner:      context.repo.owner,
+              repo:       context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+# ---------------------------------------------------------------------------
+# Pattern 2 — Dispatch a reviewer specialist on every new PR
+# ---------------------------------------------------------------------------
+# When a pull request is opened, Workforce dispatches a 'reviewer' specialist
+# who inspects the diff and posts structured feedback as a PR comment.
+# ---------------------------------------------------------------------------
+  dispatch-pr-reviewer:
+    name: Dispatch PR reviewer
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so the reviewer can diff against the base
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build review ticket
+        run: |
+          cat > /tmp/review-ticket.md <<TICKET
+          ## Code Review Request
+
+          Please review the changes in PR #${{ github.event.pull_request.number }}:
+          **"${{ github.event.pull_request.title }}"**
+
+          Base branch : \`${{ github.event.pull_request.base.ref }}\`
+          Head branch : \`${{ github.event.pull_request.head.ref }}\`
+          Author      : @${{ github.event.pull_request.user.login }}
+
+          Focus on correctness, test coverage, error handling, and backwards
+          compatibility. Return a structured review with Approve / Request Changes
+          and specific line-level comments where applicable.
+          TICKET
+
+      - name: Dispatch Workforce reviewer
+        id: workforce
+        uses: ./
+        with:
+          project: ${{ github.workspace }}
+          ticket-file: /tmp/review-ticket.md
+          specialist: reviewer
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Post review comment on PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status   = '${{ steps.workforce.outputs.status }}';
+            const missionId = '${{ steps.workforce.outputs.mission-id }}';
+
+            // The reviewer writes its findings to result.md in the worktree.
+            // Surface a summary; the full transcript is available via mission ID.
+            const icon = status === 'completed' ? '🤖' : '⚠️';
+            const body = [
+              `${icon} **Workforce automated review** (mission \`${missionId}\`, status: \`${status}\`)`,
+              '',
+              status !== 'completed'
+                ? 'The review mission did not complete successfully. Check the Actions log.'
+                : 'Review complete. See mission artifacts for the full transcript.',
+            ].join('\n');
+
+            await github.rest.pulls.createReview({
+              owner:       context.repo.owner,
+              repo:        context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              body,
+              event: status === 'completed' ? 'COMMENT' : 'COMMENT',
+            });
+
+# ---------------------------------------------------------------------------
+# Pattern 3 — Manual workflow_dispatch with free-text ticket
+# ---------------------------------------------------------------------------
+# Trigger from the GitHub UI (Actions → Run workflow) or via the GitHub API.
+# Useful for ad-hoc tasks where you don't want to open a full issue.
+# ---------------------------------------------------------------------------
+  dispatch-manual:
+    name: Manual dispatch
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dispatch Workforce mission
+        id: workforce
+        uses: ./
+        with:
+          project: ${{ github.workspace }}
+          ticket: ${{ github.event.inputs.ticket }}
+          specialist: ${{ github.event.inputs.specialist }}
+          auto-merge: ${{ github.event.inputs.auto_merge }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Print outputs
+        run: |
+          echo "Mission ID : ${{ steps.workforce.outputs.mission-id }}"
+          echo "Status     : ${{ steps.workforce.outputs.status }}"
+          echo "Branch     : ${{ steps.workforce.outputs.branch }}"
+
+      - name: Open pull request (if mission succeeded)
+        if: steps.workforce.outputs.status == 'completed'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = '${{ steps.workforce.outputs.branch }}';
+            const missionId = '${{ steps.workforce.outputs.mission-id }}';
+            if (!branch) { core.warning('No branch output — skipping PR creation.'); return; }
+            await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: `Workforce: ${missionId}`,
+              head:  branch,
+              base:  'main',
+              body:  `Automated mission dispatched via \`workflow_dispatch\`.\n\nMission ID: \`${missionId}\``,
+            });
