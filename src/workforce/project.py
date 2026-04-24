@@ -114,6 +114,12 @@ class Project(BaseModel):
     - `workspace`: a plain working directory. Missions run there directly with
       no worktree, no commit scanning, and no auto-merge — for recurring
       non-engineering tasks where outputs are files, not commits.
+
+    Budget fields are optional. When `monthly_limit_usd` is set, dispatch will
+    refuse new missions that would push the current calendar-month spend over the
+    limit, and will warn when `alert_threshold_pct` percent of it has been used.
+    `per_mission_limit_usd` caps the cost allowed for a single mission run
+    (overrides the --max-cost CLI flag when lower).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -125,6 +131,10 @@ class Project(BaseModel):
     kind: Literal["repo", "workspace"] = "repo"
     assigned_specialists: list[str] = Field(default_factory=list)
     default_model: str | None = None
+    # Budget controls (all optional; no enforcement when absent)
+    monthly_limit_usd: float | None = None
+    per_mission_limit_usd: float | None = None
+    alert_threshold_pct: int = 80
 
     @field_validator("id")
     @classmethod
@@ -272,3 +282,6 @@ class ProjectStore:
         shutil.rmtree(self._dir(project_id))
 
 
+#: Convenience alias for use in budget.py and anywhere else that references the
+#: project's configuration model without importing the full Project class name.
+ProjectConfig = Project
