@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, dispatch, manage, mission, project, roster
+from . import cleanup, dispatch, manage, mission, project, roster, stats
 
 app = typer.Typer(
     name="workforce",
@@ -92,6 +92,8 @@ app.add_typer(project.sub)
 
 
 # ----- mission --------------------------------------------------------------
+
+app.command("stats")(stats.stats_command)
 
 app.command("dispatch")(dispatch.dispatch_command)
 app.command("missions")(mission.missions_command)
