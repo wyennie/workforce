@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, dispatch, manage, mission, project, roster
+from . import cleanup, dispatch, manage, mission, project, roster, ticket
 
 app = typer.Typer(
     name="workforce",
@@ -107,6 +107,13 @@ mission_sub.command("tail")(mission.mission_tail)
 mission_sub.command("clean")(cleanup.mission_clean)
 mission_sub.command("prune")(cleanup.mission_prune)
 app.add_typer(mission_sub)
+
+# ----- ticket ------------------------------------------------------------------
+
+app.add_typer(ticket.sub)
+
+
+# ---------------------------------------------------------------------------
 
 branches_sub = typer.Typer(
     name="branches",
