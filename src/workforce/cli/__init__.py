@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, dispatch, manage, mission, project, roster
+from . import cleanup, dispatch, manage, mission, project, roster, webhook
 
 app = typer.Typer(
     name="workforce",
@@ -115,6 +115,11 @@ branches_sub = typer.Typer(
 )
 branches_sub.command("prune")(cleanup.branches_prune)
 app.add_typer(branches_sub)
+
+
+# ----- webhook daemon -------------------------------------------------------
+
+app.add_typer(webhook.sub)
 
 
 # ----- manage (interactive Manager chat) ------------------------------------
