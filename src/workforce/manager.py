@@ -715,6 +715,14 @@ async def run_manager(
         permission_mode="bypassPermissions",
     )
 
+    # Prepend a WORKFORCE.md notice so the Manager reads it before planning.
+    effective_ticket = ticket
+    if (repo_path / "WORKFORCE.md").exists():
+        effective_ticket = (
+            "Note: This project has a WORKFORCE.md — read it before decomposing the ticket.\n\n"
+            + ticket
+        )
+
     collected: list[Any] = []
     cost = 0.0
 
@@ -722,7 +730,7 @@ async def run_manager(
         nonlocal cost
         async for msg in query(
             prompt=_user_prompt(
-                ticket, project_specialists,
+                effective_ticket, project_specialists,
                 prior_decomposition=prior_decomposition,
                 user_feedback=user_feedback,
             ),
