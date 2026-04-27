@@ -830,6 +830,20 @@ def auto_merge_into(
     results: list[AutoMergeStepResult] = []
     try:
         results = auto_merge(repo_path, plan)
+    except Exception:
+        # auto_merge() raised — restore the original branch best-effort and
+        # re-raise so the exception propagates to the caller.  The finally
+        # block below won't attempt a second restore because results is still
+        # [] and any([]) is False.
+        if original_branch != target_branch:
+            try:
+                subprocess.run(
+                    ["git", "switch", original_branch],
+                    cwd=repo_path, check=True,
+                )
+            except subprocess.CalledProcessError:
+                pass  # best-effort restore; don't mask the original error
+        raise
     finally:
         # If any step failed and we moved away from the original branch,
         # restore it so the caller is not left on target_branch unexpectedly.

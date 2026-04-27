@@ -943,6 +943,29 @@ def test_auto_merge_into_restores_branch_on_failure(repo: Path) -> None:
     assert cur == "feature-x"
 
 
+def test_auto_merge_into_restores_branch_on_exception(repo: Path) -> None:
+    """If auto_merge() raises an exception, the original branch is still restored.
+
+    Arrange: start on feature-y; call auto_merge_into(main) while auto_merge
+    is patched to raise RuntimeError.  The exception must propagate AND the
+    repo must be back on feature-y.
+    """
+    subprocess.run(["git", "checkout", "-q", "-b", "feature-y"], cwd=repo, check=True)
+
+    plan: list[MergeStep] = []  # content doesn't matter; auto_merge is mocked
+
+    with patch.object(parallel, "auto_merge", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError, match="boom"):
+            auto_merge_into(repo, plan, target_branch="main")
+
+    # The repo must be back on feature-y, not main.
+    cur = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert cur == "feature-y"
+
+
 # ----- topological waves ----------------------------------------------------
 
 
