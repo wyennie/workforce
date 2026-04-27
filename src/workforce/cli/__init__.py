@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, dispatch, manage, mission, project, roster
+from . import cleanup, dispatch, manage, mission, mcp, project, roster
 
 app = typer.Typer(
     name="workforce",
@@ -93,6 +93,7 @@ app.add_typer(project.sub)
 
 # ----- mission --------------------------------------------------------------
 
+app.command("mcp-server")(mcp.mcp_server_command)
 app.command("dispatch")(dispatch.dispatch_command)
 app.command("missions")(mission.missions_command)
 app.command("replay")(mission.replay_command)
