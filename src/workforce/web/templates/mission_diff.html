@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Diff {{ meta.mission_id }} — Workforce{% endblock %}
+{% block content %}
+<p style="margin-bottom:0.5rem"><a href="/mission/{{ meta.mission_id }}">← {{ meta.mission_id }}</a></p>
+<h1>Diff — <code>{{ meta.mission_id }}</code></h1>
+
+{% if error_msg %}
+<p style="color:#8b1a1a; background:#fde8e8; padding:0.75rem 1rem;
+          border-radius:4px; margin-bottom:1rem;">{{ error_msg }}</p>
+{% elif diff_lines %}
+<pre style="padding:0;">{% for cls, line in diff_lines %}<span class="{{ cls }}">{{ line }}
+</span>{% endfor %}</pre>
+{% else %}
+<p class="empty">No diff output — the branch may have no changes relative to base.</p>
+{% endif %}
+{% endblock %}

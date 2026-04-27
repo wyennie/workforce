@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Workforce{% endblock %}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px;
+           line-height: 1.5; color: #222; background: #fff; }
+    nav { background: #1a1a2e; color: #fff; padding: 0.6rem 1.5rem;
+          display: flex; align-items: center; gap: 1.5rem; }
+    nav .brand { font-weight: 700; font-size: 1rem; color: #fff; text-decoration: none; }
+    nav a { color: #aaa; text-decoration: none; font-size: 0.9rem; }
+    nav a:hover { color: #fff; }
+    main { padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.3rem; margin-bottom: 1rem; color: #111; }
+    h2 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 0.5rem; color: #333; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; }
+    th, td { padding: 0.45rem 0.75rem; text-align: left;
+             border-bottom: 1px solid #e8e8e8; }
+    th { background: #f5f5f5; font-weight: 600; font-size: 0.85rem;
+         color: #555; text-transform: uppercase; letter-spacing: 0.03em; }
+    tr:hover td { background: #fafafa; }
+    a { color: #0070f3; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { background: #f0f0f0; padding: 0.1em 0.35em; border-radius: 3px;
+           font-size: 0.88em; font-family: monospace; }
+    pre { background: #f8f8f8; border: 1px solid #e0e0e0; padding: 1rem;
+          overflow: auto; font-size: 0.83rem; border-radius: 4px;
+          font-family: monospace; white-space: pre; }
+    .badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 3px;
+             font-size: 0.82em; font-weight: 500; }
+    .badge-ok   { background: #d4f5e2; color: #1a6b3a; }
+    .badge-err  { background: #fde8e8; color: #8b1a1a; }
+    .badge-warn { background: #fff3cd; color: #7a5700; }
+    form.filters { display: flex; gap: 0.75rem; flex-wrap: wrap;
+                   margin-bottom: 1.25rem; align-items: flex-end;
+                   background: #f9f9f9; padding: 0.75rem 1rem;
+                   border: 1px solid #e8e8e8; border-radius: 4px; }
+    form.filters label { display: flex; flex-direction: column; gap: 0.2rem;
+                         font-size: 0.82rem; color: #555; }
+    form.filters input, form.filters select {
+      border: 1px solid #ccc; border-radius: 4px;
+      padding: 0.3rem 0.5rem; font-size: 0.88rem; min-width: 140px; }
+    form.filters button { padding: 0.35rem 1rem; border: none; border-radius: 4px;
+                          background: #0070f3; color: #fff; cursor: pointer;
+                          font-size: 0.88rem; }
+    form.filters button:hover { background: #005bd3; }
+    .meta-table { max-width: 680px; margin-bottom: 1rem; }
+    .meta-table td:first-child { font-weight: 600; color: #555;
+                                  width: 160px; white-space: nowrap; }
+    .meta-table td:last-child { font-family: monospace; font-size: 0.88em; }
+    .tabs { display: flex; gap: 0; margin-bottom: 0;
+            border-bottom: 2px solid #e0e0e0; }
+    .tab-btn { padding: 0.4rem 1rem; border: none; background: none;
+               cursor: pointer; font-size: 0.9rem; color: #666;
+               border-bottom: 2px solid transparent; margin-bottom: -2px; }
+    .tab-btn.active { color: #0070f3; border-bottom-color: #0070f3; font-weight: 600; }
+    .tab-panel { display: none; padding: 1rem 0; }
+    .tab-panel.active { display: block; }
+    .diff-add { background: #e8fbe8; color: #155724; display: block; }
+    .diff-del { background: #fbe8e8; color: #721c24; display: block; }
+    .diff-ctx { display: block; color: #555; }
+    .btn { display: inline-block; padding: 0.35rem 0.9rem; border: 1px solid #ccc;
+           border-radius: 4px; font-size: 0.88rem; cursor: pointer;
+           text-decoration: none; background: #fff; color: #333; }
+    .btn:hover { background: #f5f5f5; text-decoration: none; }
+    .btn-primary { background: #0070f3; color: #fff; border-color: #0070f3; }
+    .btn-primary:hover { background: #005bd3; }
+    .empty { color: #888; font-style: italic; padding: 1rem 0; }
+  </style>
+</head>
+<body>
+<nav>
+  <a class="brand" href="/">⚙ Workforce</a>
+  <a href="/">Missions</a>
+  <a href="/stats">Stats</a>
+  <a href="/roster">Roster</a>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

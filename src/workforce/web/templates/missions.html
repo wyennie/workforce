@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Missions — Workforce{% endblock %}
+{% block content %}
+<h1>Missions</h1>
+
+<form class="filters" method="get" action="/">
+  <label>
+    Project
+    <select name="project">
+      <option value="">All projects</option>
+      {% for name in project_names %}
+      <option value="{{ name }}" {% if name == filter_project %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Status
+    <select name="status">
+      <option value="">All statuses</option>
+      <option value="completed"      {% if filter_status == "completed"      %}selected{% endif %}>completed</option>
+      <option value="error"          {% if filter_status == "error"          %}selected{% endif %}>error</option>
+      <option value="wall_timeout"   {% if filter_status == "wall_timeout"   %}selected{% endif %}>wall_timeout</option>
+      <option value="interrupted"    {% if filter_status == "interrupted"    %}selected{% endif %}>interrupted</option>
+      <option value="review_rejected"{% if filter_status == "review_rejected"%}selected{% endif %}>review_rejected</option>
+    </select>
+  </label>
+  <label>
+    Since (YYYY-MM-DD)
+    <input type="date" name="since" value="{{ filter_since }}">
+  </label>
+  <button type="submit">Filter</button>
+  {% if filter_project or filter_status or filter_since %}
+  <a class="btn" href="/">Clear</a>
+  {% endif %}
+</form>
+
+{% if missions %}
+<table>
+  <thead>
+    <tr>
+      <th>Mission ID</th>
+      <th>Project</th>
+      <th>Specialist</th>
+      <th>Status</th>
+      <th>Cost</th>
+      <th>Duration</th>
+      <th>Started</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in missions %}
+    <tr>
+      <td><a href="/mission/{{ m.mission_id }}"><code>{{ m.mission_id }}</code></a></td>
+      <td>{{ m.project_name }}</td>
+      <td>{{ m.specialist }}</td>
+      <td>{{ status_badge(m.status) | safe }}</td>
+      <td>{{ fmt_cost(m.cost_usd) }}</td>
+      <td>{{ fmt_duration(m.duration_seconds) }}</td>
+      <td>{{ m.started_at[:16].replace("T", " ") }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p style="color:#888;font-size:0.85rem;">{{ missions | length }} mission(s) shown</p>
+{% else %}
+<p class="empty">No missions found{% if filter_project or filter_status or filter_since %} matching these filters{% endif %}.</p>
+{% endif %}
+{% endblock %}

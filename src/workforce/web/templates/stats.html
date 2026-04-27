@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Stats — Workforce{% endblock %}
+{% block content %}
+<h1>Stats</h1>
+
+<p style="margin-bottom:1rem;">
+  <strong>{{ total_missions }}</strong> total missions &nbsp;·&nbsp;
+  <strong>{{ fmt_cost(total_cost) }}</strong> total spend
+</p>
+
+<h2>Cost by Specialist</h2>
+{% if specialist_stats %}
+<table>
+  <thead>
+    <tr>
+      <th>Specialist</th>
+      <th>Missions</th>
+      <th>Success Rate</th>
+      <th>Total Cost</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in specialist_stats %}
+    <tr>
+      <td>{{ s.name }}</td>
+      <td>{{ s.missions }}</td>
+      <td>{{ s.success_rate }}</td>
+      <td>{{ fmt_cost(s.cost) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No mission data yet.</p>
+{% endif %}
+
+<h2>Missions per Day (last 30 days)</h2>
+{% set max_count = last_30 | map(attribute='count') | max %}
+<table>
+  <thead><tr><th>Date</th><th>Count</th><th>Bar</th></tr></thead>
+  <tbody>
+    {% for day in last_30 %}
+    {% if day.count > 0 %}
+    <tr>
+      <td style="font-family:monospace">{{ day.date }}</td>
+      <td>{{ day.count }}</td>
+      <td>
+        <span style="display:inline-block; height:0.9em;
+          width:{{ [day.count * 200 // [max_count, 1] | max, 4] | max }}px;
+          background:#0070f3; border-radius:2px; vertical-align:middle;"></span>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+    {% if (last_30 | selectattr('count', 'gt', 0) | list | length) == 0 %}
+    <tr><td colspan="3" class="empty">No missions in the last 30 days.</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+{% endblock %}

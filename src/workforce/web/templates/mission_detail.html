@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}{{ meta.mission_id }} — Workforce{% endblock %}
+{% block content %}
+<p style="margin-bottom:0.5rem"><a href="/">← Missions</a></p>
+<h1><code>{{ meta.mission_id }}</code></h1>
+
+<table class="meta-table">
+  <tr><td>Project</td>   <td>{{ meta.project_name }} <span style="color:#888">({{ meta.project_id }})</span></td></tr>
+  <tr><td>Specialist</td><td>{{ meta.specialist }}</td></tr>
+  <tr><td>Model</td>     <td>{{ meta.model }}</td></tr>
+  <tr><td>Status</td>    <td>{{ meta.status }}</td></tr>
+  <tr><td>Cost</td>      <td>{{ fmt_cost(meta.cost_usd) }}</td></tr>
+  <tr><td>Turns</td>     <td>{{ meta.turn_count }}</td></tr>
+  <tr><td>Duration</td>  <td>{{ fmt_duration(meta.duration_seconds) }}</td></tr>
+  <tr><td>Started</td>   <td>{{ meta.started_at }}</td></tr>
+  <tr><td>Ended</td>     <td>{{ meta.ended_at }}</td></tr>
+  {% if meta.branch %}
+  <tr><td>Branch</td>    <td><code>{{ meta.branch }}</code></td></tr>
+  {% endif %}
+  {% if meta.base_sha %}
+  <tr><td>Base SHA</td>  <td><code>{{ meta.base_sha[:12] }}</code></td></tr>
+  {% endif %}
+  {% if meta.error_detail %}
+  <tr><td>Error</td>     <td style="color:#8b1a1a">{{ meta.error_detail }}</td></tr>
+  {% endif %}
+</table>
+
+{% if meta.commits %}
+<h2>Commits ({{ meta.commits | length }})</h2>
+<table>
+  <thead><tr><th>SHA</th><th>Subject</th></tr></thead>
+  <tbody>
+    {% for c in meta.commits %}
+    <tr>
+      <td><code>{{ c.sha[:12] }}</code></td>
+      <td>{{ c.subject }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<div style="margin: 1rem 0; display:flex; gap:0.5rem; align-items:center;">
+  <a class="btn" href="/mission/{{ meta.mission_id }}/diff">View Diff</a>
+  <button class="btn btn-primary" onclick="startTail()">▶ Live Tail</button>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="showTab('ticket', this)">Ticket</button>
+  <button class="tab-btn" onclick="showTab('result', this)">Result</button>
+</div>
+
+<div id="tab-ticket" class="tab-panel active">
+  <pre>{{ ticket }}</pre>
+</div>
+<div id="tab-result" class="tab-panel">
+  <pre>{{ result }}</pre>
+</div>
+
+<div id="tail-section" style="display:none; margin-top:1rem;">
+  <h2>Live Tail</h2>
+  <pre id="tail-output" style="max-height:400px;overflow-y:auto;"></pre>
+</div>
+
+<script>
+function showTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+function startTail() {
+  var section = document.getElementById('tail-section');
+  var output = document.getElementById('tail-output');
+  section.style.display = 'block';
+  output.textContent = '';
+  section.scrollIntoView({behavior: 'smooth'});
+
+  var es = new EventSource('/mission/{{ meta.mission_id }}/events');
+  es.onmessage = function(e) {
+    try {
+      var d = JSON.parse(e.data);
+      if (d.error) {
+        output.textContent += '[error] ' + d.error + '\n';
+        es.close();
+        return;
+      }
+      // Show text blocks from AssistantMessage
+      if (d._type === 'AssistantMessage' && d.content) {
+        d.content.forEach(function(block) {
+          if (block.type === 'text' && block.text) {
+            output.textContent += block.text;
+            output.scrollTop = output.scrollHeight;
+          }
+        });
+      }
+      // Close on ResultMessage
+      if (d._type === 'ResultMessage') {
+        output.textContent += '\n[done — cost: $' + (d.total_cost_usd || 0).toFixed(4) + ']\n';
+        es.close();
+      }
+    } catch(err) {
+      // non-JSON line; show raw
+      output.textContent += e.data + '\n';
+    }
+  };
+  es.onerror = function() {
+    output.textContent += '\n[stream closed]\n';
+    es.close();
+  };
+}
+</script>
+{% endblock %}
