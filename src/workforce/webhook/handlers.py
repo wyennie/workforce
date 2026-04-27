@@ -5,9 +5,8 @@ optionally dispatches a Workforce mission by shelling out to
 ``workforce dispatch``.  Handlers return the mission id on dispatch, or None
 if the event was ignored (wrong action, no matching project, etc.).
 
-The dispatch call uses ``--ci --background`` so it:
-- writes a machine-readable summary to stdout and exits (--ci)
-- returns immediately without blocking the webhook response (--background)
+The dispatch call uses ``--ci`` which writes a JSON result to stdout on
+completion.  The mission id is extracted from that JSON.
 
 The ticket text is written to a temporary file and passed via ``--file`` so
 long issue bodies don't hit shell arg-length limits.
@@ -15,6 +14,7 @@ long issue bodies don't hit shell arg-length limits.
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -32,7 +32,11 @@ def _run_dispatch(
     *,
     extra_args: list[str] | None = None,
 ) -> str | None:
-    """Write ticket to a temp file and invoke ``workforce dispatch`` in background.
+    """Write ticket to a temp file and invoke ``workforce dispatch --ci``.
+
+    Runs ``workforce dispatch`` with ``--ci`` (no ``--background``) so the
+    process completes before returning and writes a JSON result to stdout.
+    The JSON is parsed to extract the ``mission_id``.
 
     Args:
         mapping: The ProjectMapping that determines which project/specialist to use.
@@ -40,8 +44,8 @@ def _run_dispatch(
         extra_args: Additional CLI flags appended after the ticket file argument.
 
     Returns:
-        The mission id string printed to stdout by the dispatch process,
-        or None if the command failed or produced no output.
+        The mission id string from the JSON output, or None if the command
+        failed, timed out, or produced unparseable output.
     """
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", prefix="wf-webhook-", delete=False
@@ -55,7 +59,6 @@ def _run_dispatch(
             "dispatch", mapping.project,
             "--file", str(ticket_path),
             "--ci",
-            "--background",
         ]
         if mapping.specialist:
             argv += ["--specialist", mapping.specialist]
@@ -66,7 +69,7 @@ def _run_dispatch(
             argv,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=300,
         )
         if result.returncode not in (0, 1, 2):
             logger.error(
@@ -76,17 +79,17 @@ def _run_dispatch(
             )
             return None
 
-        # The --ci mode prints "mission_id=<id>" to stdout.
-        for line in result.stdout.splitlines():
-            if line.startswith("mission_id="):
-                return line.split("=", 1)[1].strip()
-
-        # Fallback: return the first non-empty stdout line.
-        for line in result.stdout.splitlines():
-            if line.strip():
-                return line.strip()
-
-        return None
+        # --ci mode writes a JSON object to stdout, e.g.:
+        # {"mission_id": "abc123", "status": "completed", ...}
+        try:
+            data = json.loads(result.stdout)
+            return data.get("mission_id")
+        except json.JSONDecodeError:
+            logger.error(
+                "workforce dispatch output was not valid JSON: %r",
+                result.stdout[:200],
+            )
+            return None
     except subprocess.TimeoutExpired:
         logger.error("workforce dispatch timed out")
         return None
