@@ -352,6 +352,11 @@ def mission_tail(
     poll_seconds: float = typer.Option(
         0.5, "--poll", help="How often to check for new events (seconds).",
     ),
+    timeout: float = typer.Option(
+        0, "--timeout",
+        help="Exit with an error if the mission does not finish within SECONDS. "
+             "0 = disabled (default). Useful for CI wrappers.",
+    ),
 ) -> None:
     """Pretty-print a mission's events.jsonl as it's appended (or once, with --no-follow)."""
     paths.ensure_layout()
@@ -371,6 +376,16 @@ def mission_tail(
     if found is None:
         output.die(f"no mission with id {mission_id!r} found in any project")
     proj, mp = found
+
+    # If the events file is missing and startup.log exists, the background
+    # process likely crashed at startup — show it as a diagnostic hint.
+    startup_log = mp.root / "startup.log"
+    if not mp.events.is_file() and startup_log.is_file():
+        hint = startup_log.read_text().strip()
+        if hint:
+            output.warn(
+                f"[yellow]startup.log for {mission_id} suggests an early failure:[/yellow]\n{hint}"
+            )
 
     meta = _load_any_meta(proj.id, mission_id)
     if isinstance(meta, ParallelMissionMeta):
@@ -394,6 +409,8 @@ def mission_tail(
 
     import time
     pos = 0
+    result_seen = False
+    start_time = time.time() if timeout > 0 else None
     try:
         while True:
             try:
@@ -408,13 +425,25 @@ def mission_tail(
                         except json.JSONDecodeError:
                             continue
                         _render_replay_event(evt, show_thinking=show_thinking)
+                        if evt.get("_type") == "ResultMessage":
+                            result_seen = True
                     pos = f.tell()
             except FileNotFoundError:
                 pass
             if not follow:
                 return
-            # Stop following once a ResultMessage closes the mission, but keep
-            # tailing through the memory-delta call's events if any.
+            # Stop following once a ResultMessage closes the mission.
+            # Sleep one extra poll cycle to catch any trailing events written
+            # in the same batch (e.g. memory-delta call), then exit cleanly.
+            if result_seen:
+                time.sleep(poll_seconds)
+                output.info("[dim](mission ended)[/dim]")
+                return
+            # Timeout guard: exit with an error if the mission takes too long.
+            if start_time is not None and time.time() - start_time > timeout:
+                output.die(
+                    f"timeout: mission {mission_id!r} did not finish within {timeout:.0f}s"
+                )
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
         output.info("[dim](stopped)[/dim]")

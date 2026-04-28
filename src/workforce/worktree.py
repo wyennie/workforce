@@ -300,17 +300,28 @@ class WorktreeManager:
         if force:
             args.append("--force")
         args.append(str(worktree_path))
+        git_error: WorktreeError | None = None
         try:
             self._git(repo_path, args)
-        except WorktreeError:
-            # Fall through to filesystem cleanup. We still raise if the dir
-            # remains.
-            pass
+        except WorktreeError as e:
+            # Capture the error so we can surface the real git message if the
+            # directory still exists after the attempt.
+            git_error = e
 
         if worktree_path.exists():
             if force:
                 shutil.rmtree(worktree_path, ignore_errors=True)
             else:
+                if git_error is not None:
+                    raw = str(git_error)
+                    if "has uncommitted changes" in raw:
+                        raise WorktreeError(
+                            f"worktree at {worktree_path} has uncommitted changes or "
+                            "untracked files; pass force=True (CLI: --force) to remove anyway."
+                        )
+                    # Any other git error (locked worktree, missing binary, …):
+                    # surface the raw message so the user knows what's wrong.
+                    raise WorktreeError(raw)
                 raise WorktreeError(
                     f"worktree at {worktree_path} has uncommitted changes or "
                     "untracked files; pass force=True (CLI: --force) to remove anyway."

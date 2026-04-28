@@ -446,6 +446,11 @@ def project_tail(
     poll_seconds: float = typer.Option(
         0.5, "--poll", help="How often to check for new events / new missions.",
     ),
+    all_done_timeout: float = typer.Option(
+        0, "--all-done-timeout",
+        help="Exit with an error if all missions do not finish within SECONDS. "
+             "0 = disabled (default).",
+    ),
 ) -> None:
     """Stream events from ALL missions in a project, interleaved with labels.
 
@@ -453,6 +458,9 @@ def project_tail(
     separate window). New missions are picked up automatically as their
     directories appear; events are tagged `[short-id/specialist]` so you can
     tell who's saying what when several workers run in parallel.
+
+    The command exits automatically once every known mission has emitted a
+    ResultMessage and a short grace period passes with no new missions appearing.
     """
     paths.ensure_layout()
     pstore = _project_store()
@@ -471,6 +479,11 @@ def project_tail(
     # Per-mission read positions and labels.
     positions: dict[str, int] = {}
     labels: dict[str, str] = {}
+    # Track missions that have emitted a ResultMessage.
+    finished_missions: set[str] = set()
+    # Timestamp when all current missions first appeared to have finished.
+    all_done_since: float | None = None
+    start_time = time.time() if all_done_timeout > 0 else None
 
     def label_for(mid: str) -> str:
         short = mid[-8:] if len(mid) > 8 else mid
@@ -496,6 +509,8 @@ def project_tail(
                     if mid not in positions:
                         positions[mid] = 0
                         labels[mid] = label_for(mid)
+                        # A new mission reset the all-done clock.
+                        all_done_since = None
                         output.info(
                             f"[bold cyan]+ attached: {labels[mid]}[/bold cyan]"
                         )
@@ -523,9 +538,29 @@ def project_tail(
                             render_labeled_event(
                                 labels[mid], evt, show_thinking=show_thinking
                             )
+                            if evt.get("_type") == "ResultMessage":
+                                finished_missions.add(mid)
                         positions[mid] = f.tell()
                 except FileNotFoundError:
                     pass
+
+            # Auto-exit when all known missions have finished and a grace period
+            # (2 × poll_seconds) passes without new missions appearing.
+            if positions and all(mid in finished_missions for mid in positions):
+                now = time.time()
+                if all_done_since is None:
+                    all_done_since = now
+                elif now - all_done_since >= 2 * poll_seconds:
+                    output.info("[dim](all missions ended)[/dim]")
+                    return
+            else:
+                all_done_since = None  # reset if a new mission appeared
+
+            # Timeout guard for CI use.
+            if start_time is not None and time.time() - start_time > all_done_timeout:
+                output.die(
+                    f"timeout: not all missions finished within {all_done_timeout:.0f}s"
+                )
 
             time.sleep(poll_seconds)
     except KeyboardInterrupt:

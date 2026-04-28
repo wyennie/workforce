@@ -446,3 +446,72 @@ def test_tail_follow_mode_terminates_on_keyboard_interrupt(
     assert "line before interrupt" in result.output
     # The handler prints "(stopped)" to signal clean exit.
     assert "stopped" in result.output
+
+
+def _result_event(num_turns: int = 3, cost: float = 0.01) -> str:
+    """One-line JSON ResultMessage event."""
+    return json.dumps({
+        "_type": "ResultMessage",
+        "num_turns": num_turns,
+        "total_cost_usd": cost,
+        "duration_ms": 1234,
+    }) + "\n"
+
+
+def test_tail_auto_terminates_on_result_message(
+    tail_mission: tuple[Project, str],
+) -> None:
+    """follow=True exits automatically once a ResultMessage event is seen.
+
+    The implementation sleeps one extra poll cycle after seeing ResultMessage
+    (to catch trailing events), then returns.  We mock time.sleep so the test
+    runs instantly: the first sleep call (normal poll) triggers the file write
+    with a ResultMessage; the second sleep call is the trailing-events sleep
+    that happens right before return — we let it pass so the function exits.
+    """
+    proj, mid = tail_mission
+    mp = mission_paths(proj.id, mid)
+    mp.events.write_text(_assistant_event("line before result"))
+
+    sleep_call = 0
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal sleep_call
+        sleep_call += 1
+        if sleep_call == 1:
+            # After first poll, append a ResultMessage so the next iteration
+            # sees it and sets result_seen = True.
+            with mp.events.open("a") as fh:
+                fh.write(_result_event())
+        # sleep_call >= 2: the trailing-events sleep before return — do nothing.
+
+    with patch("time.sleep", side_effect=fake_sleep):
+        runner = CliRunner()
+        result = runner.invoke(app, ["mission", "tail", mid, "--poll", "0.01"])
+
+    assert result.exit_code == 0, result.output
+    assert "line before result" in result.output
+    # The function should print "(mission ended)" before returning.
+    assert "mission ended" in result.output
+    # It should NOT print "(stopped)" — that's the KeyboardInterrupt path.
+    assert "stopped" not in result.output
+
+
+def test_tail_timeout_exits_with_error_when_mission_does_not_finish(
+    tail_mission: tuple[Project, str],
+) -> None:
+    """--timeout N exits with a non-zero exit code if no ResultMessage in time."""
+    proj, mid = tail_mission
+    mp = mission_paths(proj.id, mid)
+    mp.events.write_text(_assistant_event("running…"))
+
+    # Use a real tiny timeout so the test completes quickly.
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["mission", "tail", mid, "--poll", "0.05", "--timeout", "0.1"],
+    )
+
+    # Should exit non-zero (die() raises SystemExit(1)).
+    assert result.exit_code != 0
+    assert "timeout" in result.output.lower()
