@@ -399,3 +399,34 @@ def test_audit_no_changes_returns_empty(worktree_repo: Path) -> None:
     ).stdout.strip()
     # No new commits
     assert audit_ownership(worktree_repo, base, ["src/**"], []) == []
+
+
+# ----- run_manager() exception wrapping -------------------------------------
+
+
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Any
+from unittest.mock import patch
+
+from workforce import manager as manager_mod
+
+
+async def _raising_query(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+    """Fake query() that raises RuntimeError before yielding anything."""
+    raise RuntimeError("boom")
+    # Make this an async generator by adding an unreachable yield.
+    yield  # type: ignore[misc]  # pragma: no cover
+
+
+def test_run_manager_wraps_non_timeout_exception(tmp_path: Path) -> None:
+    """Any exception from the SDK session surfaces as ManagerError, not raw."""
+    with patch.object(manager_mod, "query", _raising_query):
+        with pytest.raises(ManagerError, match="manager failed: RuntimeError: boom"):
+            asyncio.run(
+                manager_mod.run_manager(
+                    ticket="do something",
+                    repo_path=tmp_path,
+                    project_specialists=[],
+                )
+            )

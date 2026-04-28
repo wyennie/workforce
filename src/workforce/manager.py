@@ -14,7 +14,7 @@ import asyncio
 import json
 import re
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -699,6 +699,7 @@ async def run_manager(
     max_turns: int = 25,
     max_budget_usd: float = 1.0,
     max_wall_seconds: float = 300.0,
+    on_message: Callable[[Any], None] | None = None,
 ) -> tuple[Decomposition, float, list[Any]]:
     """Run the Manager against the source repo. Returns (decomp, cost_usd, messages).
 
@@ -729,6 +730,8 @@ async def run_manager(
             options=options,
         ):
             collected.append(msg)
+            if on_message is not None:
+                on_message(msg)
             if isinstance(msg, ResultMessage):
                 cost = msg.total_cost_usd or 0.0
 
@@ -738,6 +741,8 @@ async def run_manager(
         raise ManagerError(
             f"manager exceeded wall-time limit ({max_wall_seconds:.0f}s)"
         ) from None
+    except Exception as e:
+        raise ManagerError(f"manager failed: {type(e).__name__}: {e}") from e
 
     text = _last_assistant_text(collected)
     if not text:
