@@ -202,6 +202,12 @@ async def run_specialist(
     return _make_result(state, started, RunStatus.COMPLETED, None)
 
 
+# TODO: Replace _single_message_stream with a public SDK API once
+# claude_agent_sdk exposes one. Currently we construct the streaming-input
+# message-dict format by hand (see claude_agent_sdk._internal.client ~209-215).
+# Any SDK internal refactor can silently break the can_use_tool enforcement
+# path. The regression test tests/test_runner.py::test_single_message_stream_shape
+# documents the expected format and will fail loudly if the shape changes.
 async def _single_message_stream(text: str) -> AsyncIterator[dict[str, Any]]:
     """Wrap a single user prompt as the streaming-protocol message dict.
 

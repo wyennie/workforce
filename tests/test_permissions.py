@@ -14,7 +14,7 @@ from claude_agent_sdk import (
 )
 
 from workforce.globmatch import glob_to_regex
-from workforce.permissions import make_path_owner_callback
+from workforce.permissions import make_path_owner_callback, make_read_only_bash_callback
 
 # ----- glob → regex ---------------------------------------------------------
 
@@ -195,4 +195,135 @@ def test_malformed_input_allowed(workspace: Path) -> None:
     result = _run(cb("Write", {}, _ctx()))
     assert isinstance(result, PermissionResultAllow)
     result = _run(cb("Write", {"file_path": ""}, _ctx()))
+    assert isinstance(result, PermissionResultAllow)
+
+
+# ----- make_read_only_bash_callback -----------------------------------------
+
+
+@pytest.fixture
+def bash_cb() -> Any:
+    """A fresh read-only Bash callback for each test."""
+    return make_read_only_bash_callback()
+
+
+# -- non-Bash tools pass through ----------------------------------------------
+
+
+def test_readonly_bash_non_bash_tools_always_allowed(bash_cb: Any) -> None:
+    """Read, Glob, Grep, Edit, Write — all pass through; only Bash is gated."""
+    for tool in ("Read", "Glob", "Grep", "Edit", "Write", "MultiEdit"):
+        result = _run(bash_cb(tool, {"command": "rm -rf /"}, _ctx()))
+        assert isinstance(result, PermissionResultAllow), tool
+
+
+# -- allowed commands --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git diff HEAD",
+        "git log --oneline -10",
+        "git status",
+        "git show HEAD:src/main.py",
+        "pytest",
+        "pytest tests/ -x -q",
+        "python -m pytest",
+        "python -m pytest tests/ --tb=short",
+        "python3 -m pytest",
+        "mypy src/",
+        "mypy src/ --ignore-missing-imports",
+        "ruff check .",
+        "ruff check src/ --select E501",
+        "npm test",
+        "npm run test",
+        "npm run lint",
+        "cargo test",
+        "cargo check",
+        "cargo clippy",
+        "make test",
+        "make check",
+        "make lint",
+    ],
+)
+def test_readonly_bash_allowed_commands(bash_cb: Any, cmd: str) -> None:
+    result = _run(bash_cb("Bash", {"command": cmd}, _ctx()))
+    assert isinstance(result, PermissionResultAllow), f"expected ALLOW for {cmd!r}"
+
+
+def test_readonly_bash_dev_null_redirect_allowed(bash_cb: Any) -> None:
+    """> /dev/null is harmless (discards output); must be allowed."""
+    for cmd in [
+        "git log > /dev/null",
+        "pytest 2>/dev/null",
+        "mypy src/ 2>&1",
+        "pytest tests/ 2>&1 | head -20",
+    ]:
+        result = _run(bash_cb("Bash", {"command": cmd}, _ctx()))
+        assert isinstance(result, PermissionResultAllow), f"expected ALLOW for {cmd!r}"
+
+
+# -- denied commands ---------------------------------------------------------
+
+
+def test_readonly_bash_file_redirect_denied(bash_cb: Any) -> None:
+    """Output redirection to a real file must be denied."""
+    for cmd in [
+        "echo hello > file.txt",
+        "git log > changes.txt",
+        "pytest > output.log",
+        "cat data.csv > /tmp/copy.csv",
+    ]:
+        result = _run(bash_cb("Bash", {"command": cmd}, _ctx()))
+        assert isinstance(result, PermissionResultDeny), f"expected DENY for {cmd!r}"
+        assert "redirection" in result.message or ">" in result.message
+
+
+def test_readonly_bash_rm_denied(bash_cb: Any) -> None:
+    result = _run(bash_cb("Bash", {"command": "rm -rf /tmp/something"}, _ctx()))
+    assert isinstance(result, PermissionResultDeny)
+    assert "rm" in result.message
+
+
+def test_readonly_bash_mv_denied(bash_cb: Any) -> None:
+    result = _run(bash_cb("Bash", {"command": "mv old.py new.py"}, _ctx()))
+    assert isinstance(result, PermissionResultDeny)
+    assert "mv" in result.message
+
+
+def test_readonly_bash_cp_denied(bash_cb: Any) -> None:
+    result = _run(bash_cb("Bash", {"command": "cp src/a.py dst/"}, _ctx()))
+    assert isinstance(result, PermissionResultDeny)
+    assert "cp" in result.message
+
+
+def test_readonly_bash_pip_install_denied(bash_cb: Any) -> None:
+    for cmd in ["pip install requests", "pip3 install mypy", "uv pip install ruff"]:
+        result = _run(bash_cb("Bash", {"command": cmd}, _ctx()))
+        assert isinstance(result, PermissionResultDeny), f"expected DENY for {cmd!r}"
+        assert "install" in result.message
+
+
+def test_readonly_bash_npm_install_denied(bash_cb: Any) -> None:
+    for cmd in ["npm install", "npm install lodash", "npm i react", "yarn add axios"]:
+        result = _run(bash_cb("Bash", {"command": cmd}, _ctx()))
+        assert isinstance(result, PermissionResultDeny), f"expected DENY for {cmd!r}"
+
+
+def test_readonly_bash_denial_message_is_helpful(bash_cb: Any) -> None:
+    """Denial messages must identify what was rejected and suggest alternatives."""
+    result = _run(bash_cb("Bash", {"command": "rm -rf ."}, _ctx()))
+    assert isinstance(result, PermissionResultDeny)
+    msg = result.message
+    # Must explain the denial clearly enough for the Reviewer to self-correct.
+    assert "rm" in msg
+    assert "not permitted" in msg or "not allowed" in msg
+
+
+def test_readonly_bash_empty_command_allowed(bash_cb: Any) -> None:
+    """Empty or missing command key passes through (let the SDK handle it)."""
+    result = _run(bash_cb("Bash", {}, _ctx()))
+    assert isinstance(result, PermissionResultAllow)
+    result = _run(bash_cb("Bash", {"command": "  "}, _ctx()))
     assert isinstance(result, PermissionResultAllow)
