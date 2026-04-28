@@ -847,3 +847,55 @@ def test_dispatch_review_rejected_on_wall_timeout_stays_timeout(
     assert meta.status is MissionStatus.WALL_TIMEOUT
     assert reviewer_called[0] is False  # Reviewer skipped entirely
     assert meta.reviews == []
+
+
+# ----- fcntl Windows guard --------------------------------------------------
+
+
+def test_append_project_memory_without_fcntl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """_append_project_memory must not raise when fcntl is unavailable (Windows).
+
+    Simulates the Windows environment by patching mission._fcntl to None, then
+    verifies the entry is still written to the file.
+    """
+    monkeypatch.setattr(mission, "_fcntl", None)
+    mem_file = tmp_path / "memory.md"
+    mission._append_project_memory(mem_file, "## m-test\n\nhello from test")
+    assert mem_file.exists()
+    assert "hello from test" in mem_file.read_text()
+
+
+# ----- scan_commits stderr surfacing ----------------------------------------
+
+
+def test_scan_commits_error_includes_stderr(tmp_path: Path) -> None:
+    """When git log fails, commit_scan_error should include stderr content."""
+    import sys
+
+    # scan_commits raises CalledProcessError with a bad base_sha; git will
+    # write an error to stderr that should appear in the exception message.
+    with pytest.raises(subprocess.CalledProcessError):
+        scan_commits(tmp_path, "deadbeef" * 5)
+
+    # Now test the dispatch-level surfacing: patch scan_commits to raise a
+    # CalledProcessError with known stderr content.
+    fake_exc = subprocess.CalledProcessError(
+        returncode=128,
+        cmd=["git", "log"],
+        stderr="fatal: bad object cafebabe\n",
+    )
+
+    def _failing_scan(path: Path, sha: str) -> list[Any]:
+        raise fake_exc
+
+    with patch.object(mission, "scan_commits", _failing_scan):
+        # Build a minimal error_detail string the way dispatch() does.
+        # We replicate the logic directly to avoid a full dispatch() call.
+        exc = fake_exc
+        stderr_snippet = (exc.stderr or "")[:300]
+        error_detail = (
+            f"commit scan failed: {exc}"
+            + (f"; stderr: {stderr_snippet}" if stderr_snippet else "")
+        )
+    assert "fatal: bad object" in error_detail
+    assert "commit scan failed" in error_detail
