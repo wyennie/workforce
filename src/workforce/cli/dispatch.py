@@ -571,6 +571,19 @@ def dispatch_command(
         merge_into = branch
         auto_merge = True
 
+    # Budget check: refuse or warn before any expensive planning happens.
+    from workforce.budget import check_budget
+    budget = check_budget(proj.id, proj)
+    if not budget.allowed:
+        output.die(f"budget limit reached: {budget.reason}")
+    if budget.warning:
+        output.warn(f"budget warning: {budget.warning}")
+
+    # Apply per-mission cost cap from project config if it's tighter than the
+    # CLI --max-cost flag.
+    if proj.per_mission_limit_usd is not None:
+        max_cost = min(max_cost, proj.per_mission_limit_usd)
+
     limits = RunLimits(
         max_turns=max_turns, max_budget_usd=max_cost, max_wall_seconds=max_wall
     )

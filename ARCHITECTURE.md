@@ -575,6 +575,23 @@ silent (the mission still completes; `memory_delta_captured=False` in meta).
 
 ---
 
+## Event log format
+
+Every SDK message received during a mission is recorded in
+`missions/<mission-id>/events.jsonl` (one JSON object per line). Each record
+carries a `_type` discriminator field set to the Python class name of the SDK
+message.
+
+See **[docs/events-schema.md](docs/events-schema.md)** for:
+
+- Full field-by-field documentation of every `_type` (`SystemMessage`,
+  `AssistantMessage`, `UserMessage`, `ResultMessage`, and others)
+- Realistic example JSON objects for each type
+- Documentation of all per-mission artifact files (`events.jsonl`, `meta.json`,
+  `transcript.md`, `result.md`, `ticket.md`)
+
+---
+
 ## Build and Tooling
 
 | Item | Detail |
