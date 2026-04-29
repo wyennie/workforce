@@ -14,6 +14,22 @@ from rich.table import Table
 
 _stdout = Console()
 _stderr = Console(stderr=True)
+_CI_MODE: bool = False
+
+
+def set_ci_mode() -> None:
+    """Switch all output to plain text (no ANSI codes). Called once by --ci."""
+    global _stdout, _stderr, _CI_MODE
+    _CI_MODE = True
+    # color_system=None tells Rich to produce no ANSI escape sequences at all;
+    # markup is still parsed and stripped, so callers never see raw tags.
+    _stdout = Console(color_system=None)
+    _stderr = Console(stderr=True, color_system=None)
+
+
+def is_ci_mode() -> bool:
+    """True when set_ci_mode() has been called for this process."""
+    return _CI_MODE
 
 
 def info(message: str) -> None:
