@@ -69,6 +69,62 @@ def test_reviewer_lacks_write_and_edit() -> None:
     assert "Edit" not in s.allowed_tools
 
 
+# ----- new templates ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tmpl", "expected_role_fragment"),
+    [
+        ("devops", "DevOps"),
+        ("data", "data engineer"),
+        ("docs", "Technical writer"),
+        ("security", "security engineer"),
+        ("db", "Database engineer"),
+        ("mobile", "Mobile application engineer"),
+    ],
+)
+def test_new_template_role(tmpl: str, expected_role_fragment: str) -> None:
+    s = Specialist.from_template("aria", tmpl)
+    assert expected_role_fragment in s.role
+
+
+def test_devops_has_all_dev_tools() -> None:
+    s = Specialist.from_template("aria", "devops")
+    assert s.allowed_tools == ALL_DEV_TOOLS
+
+
+def test_data_lacks_webfetch() -> None:
+    s = Specialist.from_template("aria", "data")
+    assert "WebFetch" not in s.allowed_tools
+    assert "Bash" in s.allowed_tools
+
+
+def test_docs_lacks_bash_and_webfetch() -> None:
+    s = Specialist.from_template("aria", "docs")
+    assert "Bash" not in s.allowed_tools
+    assert "WebFetch" not in s.allowed_tools
+    assert "Write" in s.allowed_tools
+
+
+def test_security_is_read_only() -> None:
+    s = Specialist.from_template("aria", "security")
+    assert "Write" not in s.allowed_tools
+    assert "Edit" not in s.allowed_tools
+    assert "Bash" in s.allowed_tools
+
+
+def test_db_lacks_webfetch() -> None:
+    s = Specialist.from_template("aria", "db")
+    assert "WebFetch" not in s.allowed_tools
+    assert "Write" in s.allowed_tools
+
+
+def test_mobile_lacks_webfetch() -> None:
+    s = Specialist.from_template("aria", "mobile")
+    assert "WebFetch" not in s.allowed_tools
+    assert "Bash" in s.allowed_tools
+
+
 def test_template_role_override() -> None:
     s = Specialist.from_template("aria", "backend", role="custom role")
     assert s.role == "custom role"

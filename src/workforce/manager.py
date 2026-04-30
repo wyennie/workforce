@@ -232,6 +232,12 @@ The available templates are:
 - `tester` — writes/maintains tests, hunts regressions
 - `reviewer` — read-only code reviewer (no Write/Edit)
 - `generalist` — anything
+- `devops` — Docker, Kubernetes, GitHub Actions, Terraform, CI/CD
+- `data` — pandas, SQL, dbt, Jupyter, data pipelines
+- `docs` — READMEs, API docs, docstrings, changelogs, architecture guides
+- `security` — SAST, dependency audits, OWASP Top 10 (read-only, no Write/Edit)
+- `db` — schema migrations, query optimization, ORM patterns
+- `mobile` — React Native, Flutter, Swift, Kotlin, on-device constraints
 
 `suggested_specialist` is the name to use; `template_hint` is the template
 to hire from if that name doesn't exist yet. Names should be short
@@ -310,7 +316,8 @@ def _user_prompt(
             "Prefer these names — they have project memory and know the codebase.\n"
             "For any task that needs a specialty none of them cover, suggest a new\n"
             "short name and set `template_hint` to one of: `backend`, `frontend`,\n"
-            "`tester`, `reviewer`, `generalist`. Workforce will auto-hire from the\n"
+            "`tester`, `reviewer`, `generalist`, `devops`, `data`, `docs`,\n"
+            "`security`, `db`, `mobile`. Workforce will auto-hire from the\n"
             "template before dispatching."
         ),
     ]
