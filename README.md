@@ -6,17 +6,40 @@ Workforce is a staffing agency for AI engineers, not a session manager. You hire
 
 ## Install
 
-One-liner (installs [`uv`](https://docs.astral.sh/uv/) if missing, then installs Workforce as an isolated tool):
+**Recommended** — install from PyPI as an isolated tool (no virtualenv management needed):
+
+```bash
+uv tool install workforce-ai
+# or: pipx install workforce-ai
+workforce doctor
+```
+
+For reproducible installs, pin a version:
+
+```bash
+uv tool install workforce-ai==0.1.0
+```
+
+**Fallback — one-liner** (installs [`uv`](https://docs.astral.sh/uv/) if missing, then installs
+from the GitHub repo HEAD):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/wyennie/workforce/main/install.sh | bash
 ```
 
-Or, if you already have `uv` or [`pipx`](https://pipx.pypa.io/):
+To install a specific tagged release via the script:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/wyennie/workforce/main/install.sh | bash -s -- --tag v0.1.0
+# List available versions:
+curl -LsSf https://raw.githubusercontent.com/wyennie/workforce/main/install.sh | bash -s -- --list-tags
+```
+
+Or install directly from git if you prefer:
 
 ```bash
 uv tool install git+https://github.com/wyennie/workforce
-# or:  pipx install git+https://github.com/wyennie/workforce
+# or:  pip install git+https://github.com/wyennie/workforce
 workforce doctor
 ```
 
