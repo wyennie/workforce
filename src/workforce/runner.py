@@ -33,6 +33,8 @@ class RunLimits:
     max_turns: int = 50
     max_budget_usd: float = 5.0
     max_wall_seconds: float = 1800.0  # 30 min
+    max_retries: int = 0
+    retry_backoff_base: float = 30.0
 
 
 class RunStatus(StrEnum):
