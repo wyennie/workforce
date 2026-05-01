@@ -18,9 +18,12 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-import tomllib
+try:
+    import tomllib
+except ImportError:  # pragma: no cover — Python < 3.11 fallback
+    import tomli as tomllib  # type: ignore[no-redef]
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -154,6 +157,43 @@ class Project(BaseModel):
         return v
 
 
+# ----- Per-project config (.workforce.toml) ---------------------------------
+
+
+class ProjectConfig(BaseModel):
+    """Per-project configuration loaded from ``.workforce.toml`` in the repo root.
+
+    All fields are optional. Values present here serve as defaults for
+    ``dispatch_command``, but explicit CLI flags always take precedence.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    default_specialist: str | None = None
+    review: bool | None = None
+    auto_merge: bool | None = None
+    max_turns: int | None = None
+    max_cost: float | None = None
+
+
+def load_project_config(repo_path: Path) -> "ProjectConfig":
+    """Load ``.workforce.toml`` from *repo_path*, returning an empty config if absent.
+
+    Args:
+        repo_path: Root of the project directory (where ``.workforce.toml`` lives).
+
+    Returns:
+        A :class:`ProjectConfig` with values from the file, or a default-only
+        instance if the file does not exist.
+    """
+    config_path = repo_path / ".workforce.toml"
+    if not config_path.is_file():
+        return ProjectConfig()
+    with config_path.open("rb") as f:
+        data = tomllib.load(f)
+    return ProjectConfig.model_validate(data)
+
+
 # ----- Store ----------------------------------------------------------------
 
 
@@ -229,8 +269,45 @@ class ProjectStore:
             )
         return matches[0]
 
+    def find_by_cwd(self, start_path: Path | None = None) -> "Project | None":
+        """Walk up from *start_path* (default: cwd) to find a ``.workforce-project-id`` marker.
+
+        Returns the registered Project whose id matches the first marker found
+        while ascending the directory tree, or ``None`` if no match is found.
+
+        Args:
+            start_path: Directory to start from.  Defaults to ``Path.cwd()``.
+        """
+        current = (start_path or Path.cwd()).resolve()
+        while True:
+            try:
+                project_id = read_marker(current)
+            except ProjectError:
+                project_id = None
+            if project_id is not None and self.exists(project_id):
+                return self.load_by_id(project_id)
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        return None
+
     def resolve(self, ref: str) -> Project:
-        """Resolve a project by full ID (12 hex) or display name."""
+        """Resolve a project by full ID (12 hex), display name, or ``'.'``/``''`` for cwd auto-detect.
+
+        When *ref* is ``'.'`` or the empty string, :meth:`find_by_cwd` is called.
+        A :class:`ProjectError` is raised if no project can be detected from the
+        current working directory.
+        """
+        if ref in (".", ""):
+            proj = self.find_by_cwd()
+            if proj is None:
+                raise ProjectError(
+                    f"could not auto-detect project from current directory; "
+                    f"no {MARKER_FILENAME!r} file found in this directory or any parent. "
+                    "Register this directory with `workforce project add .` first."
+                )
+            return proj
         if ID_PATTERN.match(ref):
             return self.load_by_id(ref)
         return self.find_by_name(ref)

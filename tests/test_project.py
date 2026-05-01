@@ -8,10 +8,12 @@ from workforce.project import (
     ID_LENGTH,
     MARKER_FILENAME,
     Project,
+    ProjectConfig,
     ProjectError,
     ProjectStore,
     compute_project_id,
     is_git_repo,
+    load_project_config,
     read_marker,
     resolve_project_id,
     write_marker,
@@ -263,3 +265,137 @@ def test_delete_removes_dir(store: ProjectStore) -> None:
 def test_delete_unknown_raises(store: ProjectStore) -> None:
     with pytest.raises(ProjectError):
         store.delete("000000000000")
+
+
+# ----- find_by_cwd ----------------------------------------------------------
+
+
+def test_find_by_cwd_returns_project(tmp_path: Path) -> None:
+    """find_by_cwd() from a deep subdir walks up to find the marker file."""
+    # Set up a store and register a project
+    store = ProjectStore(root=tmp_path / "projects")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    # Give the repo a deterministic id via a marker file
+    project_id = compute_project_id(repo)
+    write_marker(repo, project_id)
+
+    proj = Project(id=project_id, name="autoproj", repo_path=str(repo))
+    store.save(proj)
+
+    # Create a deep subdirectory and call find_by_cwd from there
+    deep = repo / "src" / "pkg" / "sub"
+    deep.mkdir(parents=True)
+
+    found = store.find_by_cwd(start_path=deep)
+    assert found is not None
+    assert found.id == project_id
+    assert found.name == "autoproj"
+
+
+def test_find_by_cwd_returns_none_when_no_marker(tmp_path: Path) -> None:
+    """find_by_cwd() returns None when no marker file exists anywhere."""
+    store = ProjectStore(root=tmp_path / "projects")
+    result = store.find_by_cwd(start_path=tmp_path / "unrelated")
+    assert result is None
+
+
+def test_find_by_cwd_ignores_unregistered_marker(tmp_path: Path) -> None:
+    """find_by_cwd() returns None when marker exists but id is not in the store."""
+    store = ProjectStore(root=tmp_path / "projects")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_marker(repo, compute_project_id(repo))
+    # Don't save any project to the store
+    result = store.find_by_cwd(start_path=repo)
+    assert result is None
+
+
+def test_resolve_dot_finds_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """resolve('.') auto-detects the project from the cwd marker."""
+    store = ProjectStore(root=tmp_path / "projects")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = compute_project_id(repo)
+    write_marker(repo, project_id)
+    proj = Project(id=project_id, name="dotproj", repo_path=str(repo))
+    store.save(proj)
+
+    monkeypatch.chdir(repo)
+    found = store.resolve(".")
+    assert found.id == project_id
+
+
+def test_resolve_empty_string_finds_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """resolve('') also triggers cwd auto-detection."""
+    store = ProjectStore(root=tmp_path / "projects")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_id = compute_project_id(repo)
+    write_marker(repo, project_id)
+    proj = Project(id=project_id, name="emptyproj", repo_path=str(repo))
+    store.save(proj)
+
+    monkeypatch.chdir(repo)
+    found = store.resolve("")
+    assert found.id == project_id
+
+
+def test_resolve_dot_raises_when_no_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """resolve('.') raises ProjectError when no marker is found."""
+    store = ProjectStore(root=tmp_path / "projects")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ProjectError, match="auto-detect"):
+        store.resolve(".")
+
+
+# ----- ProjectConfig and load_project_config --------------------------------
+
+
+def test_project_config_defaults() -> None:
+    """Empty ProjectConfig has all None fields."""
+    cfg = ProjectConfig()
+    assert cfg.default_specialist is None
+    assert cfg.review is None
+    assert cfg.auto_merge is None
+    assert cfg.max_turns is None
+    assert cfg.max_cost is None
+
+
+def test_load_project_config_missing_file(tmp_path: Path) -> None:
+    """Returns default ProjectConfig when .workforce.toml is absent."""
+    cfg = load_project_config(tmp_path)
+    assert cfg == ProjectConfig()
+
+
+def test_load_project_config_reads_values(tmp_path: Path) -> None:
+    """Values in .workforce.toml are loaded into the ProjectConfig."""
+    (tmp_path / ".workforce.toml").write_text(
+        "default_specialist = 'builder'\n"
+        "review = true\n"
+        "auto_merge = false\n"
+        "max_turns = 30\n"
+        "max_cost = 2.5\n"
+    )
+    cfg = load_project_config(tmp_path)
+    assert cfg.default_specialist == "builder"
+    assert cfg.review is True
+    assert cfg.auto_merge is False
+    assert cfg.max_turns == 30
+    assert cfg.max_cost == 2.5
+
+
+def test_load_project_config_ignores_unknown_keys(tmp_path: Path) -> None:
+    """Extra keys in .workforce.toml are silently ignored (extra='ignore')."""
+    (tmp_path / ".workforce.toml").write_text("unknown_key = 'ignored'\nmax_turns = 10\n")
+    cfg = load_project_config(tmp_path)
+    assert cfg.max_turns == 10
+
+
+def test_load_project_config_partial(tmp_path: Path) -> None:
+    """Partial .workforce.toml leaves unset fields as None."""
+    (tmp_path / ".workforce.toml").write_text("review = true\n")
+    cfg = load_project_config(tmp_path)
+    assert cfg.review is True
+    assert cfg.max_turns is None

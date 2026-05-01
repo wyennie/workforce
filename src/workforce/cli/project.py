@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from workforce import output, paths, project
+from workforce.project import load_project_config
 from workforce.specialist import RosterStore
 from workforce.worktree import (
     WorktreeManager,
@@ -432,6 +433,49 @@ def forget(
 
     pstore.delete(proj.id)
     output.success(f"forgot project {proj.name}")
+
+
+# ----- config (per-project .workforce.toml) ---------------------------------
+
+
+@sub.command("config")
+def config(
+    project_ref: str = typer.Argument(
+        ...,
+        help="Project name, ID, or . to auto-detect from current directory",
+        metavar="PROJECT",
+    ),
+) -> None:
+    """Show the active per-project configuration for a project.
+
+    Reads ``.workforce.toml`` from the project's repo root and pretty-prints
+    the resolved values.  Fields not present in the file are shown as their
+    defaults.
+    """
+    pstore = _project_store()
+    try:
+        proj = pstore.resolve(project_ref)
+    except project.ProjectError as e:
+        output.die(str(e))
+
+    cfg = load_project_config(Path(proj.repo_path))
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+
+    def _fmt(val: object) -> str:
+        if val is None:
+            return "[dim](not set)[/dim]"
+        return str(val)
+
+    table.add_row("default_specialist", _fmt(cfg.default_specialist))
+    table.add_row("review", _fmt(cfg.review))
+    table.add_row("auto_merge", _fmt(cfg.auto_merge))
+    table.add_row("max_turns", _fmt(cfg.max_turns))
+    table.add_row("max_cost", _fmt(cfg.max_cost))
+
+    output.raw(Panel(table, title=f"project config: {proj.name}", title_align="left"))
 
 
 # ----- tail (multi-mission live stream) -------------------------------------
