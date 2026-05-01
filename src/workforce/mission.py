@@ -17,7 +17,6 @@ except ImportError:
     _fcntl = None  # Windows - file locking not available
 import json
 import logging
-import os
 import secrets
 import subprocess
 from dataclasses import dataclass
@@ -39,17 +38,10 @@ from workforce.project import Project, ProjectStore
 from workforce.reviewer import Review, ReviewError
 from workforce.runner import EventCallback, RunLimits, RunStatus
 from workforce.specialist import RosterStore, Specialist
-from workforce.utils import _FENCE_RE
+from workforce.utils import _FENCE_RE, _atomic_write
 from workforce.worktree import WorktreeManager
 
 SCHEMA_VERSION = 1
-
-
-def _write_meta(path: Path, content: str) -> None:
-    """Atomically write *content* to *path* via a temp file + os.replace."""
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, path)
 
 
 class MissionStatus(StrEnum):
@@ -568,7 +560,7 @@ async def dispatch(
                     manager_cost_usd=manager_cost_usd,
                     turn_count=0,
                 )
-                _write_meta(mp.meta, meta.model_dump_json(indent=2) + "\n")
+                _atomic_write(mp.meta, meta.model_dump_json(indent=2) + "\n")
                 # Update specialist stats (failure)
                 stats = roster_store.load_stats(specialist.name)
                 stats.missions_failed += 1
@@ -774,7 +766,7 @@ async def dispatch(
         reviews=review_records,
         revision_rounds=revision_rounds_used,
     )
-    _write_meta(mp.meta, meta.model_dump_json(indent=2) + "\n")
+    _atomic_write(mp.meta, meta.model_dump_json(indent=2) + "\n")
 
     # Update specialist stats.
     stats = roster_store.load_stats(specialist.name)

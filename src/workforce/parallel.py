@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
-import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -45,6 +44,7 @@ from workforce.specialist import (
     RosterStore,
     Specialist,
 )
+from workforce.utils import _atomic_write
 from workforce.worktree import WorktreeManager, current_branch, is_clean
 
 SCHEMA_VERSION = 1
@@ -728,7 +728,7 @@ async def _run_sub_missions(
         for meta in skips:
             mp = mission.mission_paths(project.id, meta.mission_id)
             mp.root.mkdir(parents=True, exist_ok=True)
-            _write_meta(mp.meta, meta.model_dump_json(indent=2) + "\n")
+            _atomic_write(mp.meta, meta.model_dump_json(indent=2) + "\n")
             all_metas.append(meta)
 
         # Run runnable tasks in this wave concurrently.
@@ -746,16 +746,9 @@ async def _run_sub_missions(
     return all_metas
 
 
-def _write_meta(path: Path, content: str) -> None:
-    """Atomically write *content* to *path* via a temp file + os.replace."""
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def _save_parent_meta(path: Path, meta: ParallelMissionMeta) -> None:
     """Atomically persist a ParallelMissionMeta to disk."""
-    _write_meta(path, meta.model_dump_json(indent=2) + "\n")
+    _atomic_write(path, meta.model_dump_json(indent=2) + "\n")
 
 
 # ----- Callback signatures (for type-only purposes) -------------------------
@@ -827,9 +820,11 @@ def auto_merge_into(
     """Switch to `target_branch` if needed, then run the merge plan against it.
 
     Preflight: the target must exist and the source must be clean (no
-    staged/modified changes). On any failure leaves the source on the
-    target branch (does not switch back to where the user started — they
-    asked for the merge to land here).
+    staged/modified changes).
+
+    If any merge step fails, and the repo was on a different branch before this
+    call, the original branch is restored via ``git switch`` and a warning entry
+    is appended to the returned results.
     """
     if not _branch_exists(repo_path, target_branch):
         raise MergePreflightError(
@@ -840,8 +835,14 @@ def auto_merge_into(
             f"{repo_path} has uncommitted changes; commit or stash before "
             "auto-merging (untracked files are fine)"
         )
-    current = current_branch(repo_path)
-    if current != target_branch:
+
+    # Capture the original branch before we move anywhere.
+    original_branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=repo_path, capture_output=True, text=True, check=False,
+    ).stdout.strip()
+
+    if original_branch != target_branch:
         switch = subprocess.run(
             ["git", "switch", target_branch],
             cwd=repo_path, capture_output=True, text=True, check=False,
@@ -851,7 +852,47 @@ def auto_merge_into(
                 f"could not switch to {target_branch!r}: "
                 + (switch.stderr.strip() or switch.stdout.strip())
             )
-    return auto_merge(repo_path, plan)
+
+    results: list[AutoMergeStepResult] = []
+    try:
+        results = auto_merge(repo_path, plan)
+    except Exception:
+        # auto_merge() raised — restore the original branch best-effort and
+        # re-raise so the exception propagates to the caller.  The finally
+        # block below won't attempt a second restore because results is still
+        # [] and any([]) is False.
+        if original_branch != target_branch:
+            try:
+                subprocess.run(
+                    ["git", "switch", original_branch],
+                    cwd=repo_path, check=True,
+                )
+            except subprocess.CalledProcessError:
+                pass  # best-effort restore; don't mask the original error
+        raise
+    finally:
+        # If any step failed and we moved away from the original branch,
+        # restore it so the caller is not left on target_branch unexpectedly.
+        if original_branch != target_branch and any(
+            not r.success for r in results
+        ):
+            subprocess.run(
+                ["git", "switch", original_branch],
+                cwd=repo_path, capture_output=True, text=True, check=False,
+            )
+            results.append(
+                AutoMergeStepResult(
+                    task_id="_restore",
+                    branch=original_branch,
+                    success=True,
+                    detail=(
+                        f"warning: branch restored to {original_branch!r} "
+                        "after merge failure"
+                    ),
+                )
+            )
+
+    return results
 
 
 def auto_merge(repo_path: Path, plan: list[MergeStep]) -> list[AutoMergeStepResult]:

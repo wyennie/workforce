@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 import tomli_w
@@ -13,6 +15,28 @@ import tomli_w
 # response like ```json{...}``` (content on the same line as the fence) still
 # matches.  The \n? before the closing fence is symmetric.
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Atomically write *content* to *path* via a temp file and ``os.replace``.
+
+    The temp file is placed next to *path* using the name ``<name>.tmp``
+    (e.g. ``meta.json.tmp``) so the rename stays on the same filesystem.
+
+    If ``os.replace`` raises :exc:`OSError`, the temp file is deleted before
+    the exception is re-raised so no orphaned ``.tmp`` files are left behind.
+
+    Args:
+        path: Destination file path.
+        content: Text content to write (UTF-8).
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _dump_toml(data: dict[str, Any]) -> str:
