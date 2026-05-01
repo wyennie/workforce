@@ -65,6 +65,7 @@ from workforce.worktree import (
 )
 
 from . import panels as panels_mod
+from ._completions import complete_project, complete_specialist
 from ._common import (
     _PARALLEL_STATUS_STYLES,
     _STATUS_STYLES,
@@ -361,12 +362,14 @@ def dispatch_command(
         ...,
         help="Project name, ID, or . to auto-detect from current directory",
         metavar="PROJECT",
+        autocompletion=complete_project,
     ),
     ticket: str | None = typer.Argument(None, help="Ticket text in quotes."),
     specialist: str | None = typer.Option(
         None,
         "--specialist",
         help="Bypass the Manager and dispatch this specialist directly. Use for tiny tickets where you don't need planning overhead.",
+        autocompletion=complete_specialist,
     ),
     auto_staff: bool = typer.Option(
         True,

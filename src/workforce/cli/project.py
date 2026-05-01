@@ -22,6 +22,7 @@ from workforce.worktree import (
     has_commits,
 )
 
+from ._completions import complete_project, complete_specialist
 from .mission import render_labeled_event
 
 sub = typer.Typer(
@@ -141,8 +142,8 @@ def add(
 
 @sub.command("assign")
 def assign(
-    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
-    specialists: list[str] = typer.Argument(..., help="Specialist names to assign."),
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT", autocompletion=complete_project),
+    specialists: list[str] = typer.Argument(..., help="Specialist names to assign.", autocompletion=complete_specialist),
 ) -> None:
     """Assign one or more specialists to a project."""
     pstore = _project_store()
@@ -179,8 +180,8 @@ def assign(
 
 @sub.command("unassign")
 def unassign(
-    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
-    specialist: str = typer.Argument(..., help="Specialist name."),
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT", autocompletion=complete_project),
+    specialist: str = typer.Argument(..., help="Specialist name.", autocompletion=complete_specialist),
 ) -> None:
     """Remove a specialist from a project."""
     pstore = _project_store()
@@ -220,7 +221,7 @@ def list_() -> None:
 
 
 @sub.command("show")
-def show(project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT")) -> None:
+def show(project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT", autocompletion=complete_project)) -> None:
     """Show project details and assigned specialists."""
     pstore = _project_store()
     try:
@@ -277,7 +278,7 @@ def show(project_ref: str = typer.Argument(..., help="Project name or id.", meta
 
 @sub.command("nuke")
 def nuke(
-    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT", autocompletion=complete_project),
     also_memory: bool = typer.Option(
         False, "--also-memory",
         help="Also delete per-specialist project memory files. Default: keep memory.",
@@ -408,7 +409,7 @@ def nuke(
 
 @sub.command("forget")
 def forget(
-    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT", autocompletion=complete_project),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
 ) -> None:
     """Unregister a project (deletes its memory and mission history).
@@ -483,7 +484,7 @@ def config(
 
 @sub.command("tail")
 def project_tail(
-    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT"),
+    project_ref: str = typer.Argument(..., help="Project name or id.", metavar="PROJECT", autocompletion=complete_project),
     show_thinking: bool = typer.Option(
         False, "--show-thinking", help="Include thinking blocks in the stream."
     ),
