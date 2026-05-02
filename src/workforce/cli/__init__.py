@@ -98,6 +98,8 @@ app.add_typer(project.sub)
 
 # ----- mission --------------------------------------------------------------
 
+app.command("stats")(stats.stats_command)
+
 app.command("dispatch")(dispatch.dispatch_command)
 app.command("missions")(mission.missions_command)
 app.command("replay")(mission.replay_command)

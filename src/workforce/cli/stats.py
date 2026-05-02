@@ -1,120 +1,203 @@
-"""``workforce stats`` command — aggregate mission statistics."""
+"""`workforce stats` command.
+
+Scans all project mission directories and renders aggregated statistics.
+Supports per-specialist (default) and per-project (``--by-project``) pivots,
+with Rich table, CSV, and JSON output modes.
+"""
 
 from __future__ import annotations
 
+import csv
+import dataclasses
+import io
 import json
+import sys
 
 import typer
 from rich.table import Table
 
 from workforce import output, paths
-from workforce.stats import query_stats
+from workforce.stats import StatsResult, query_stats
 
 
 def stats_command(
-    project: str | None = typer.Option(
-        None, "--project", metavar="PROJECT", help="Filter to a specific project id or name."
-    ),
-    specialist: str | None = typer.Option(
-        None, "--specialist", metavar="NAME", help="Filter to a specific specialist."
-    ),
     since: str | None = typer.Option(
         None,
         "--since",
         metavar="DATE",
-        help="Only include missions started on or after this ISO date (e.g. 2026-05-01).",
+        help=(
+            "Filter to missions started on or after DATE (ISO format, e.g. "
+            "2026-05-01)."
+        ),
+    ),
+    by_project: bool = typer.Option(
+        False,
+        "--by-project",
+        help="Pivot the output to show one row per project instead of per specialist.",
+    ),
+    as_csv: bool = typer.Option(
+        False,
+        "--csv",
+        help="Output CSV suitable for spreadsheet import.",
     ),
     as_json: bool = typer.Option(
-        False, "--json", help="Output machine-readable JSON instead of a table."
+        False,
+        "--json",
+        help="Output full StatsResult as JSON.",
     ),
 ) -> None:
-    """Show aggregated mission statistics across all projects.
+    """Show mission statistics across all projects.
 
-    Displays one row per specialist with total missions, cost, average duration,
-    and success rate. Pass --json for machine-readable output.
+    By default prints a Rich table of per-specialist aggregates.  Use
+    ``--by-project`` to pivot to per-project rows, ``--csv`` for
+    machine-readable CSV, or ``--json`` for the full structured result.
     """
     paths.ensure_layout()
-
-    # Resolve project name → id if needed
-    project_id: str | None = None
-    if project is not None:
-        from workforce import project as project_mod
-
-        pstore = project_mod.ProjectStore()
-        try:
-            proj = pstore.resolve(project)
-            project_id = proj.id
-        except project_mod.ProjectError as e:
-            output.die(str(e))
-
-    result = query_stats(
-        project_id=project_id,
-        specialist_name=specialist,
-        since_date=since,
-    )
+    result = query_stats(since_date=since)
 
     if as_json:
-        rows = []
-        for sp in sorted(result.by_specialist.values(), key=lambda s: s.specialist):
-            rows.append(
-                {
-                    "specialist": sp.specialist,
-                    "missions": sp.mission_count,
-                    "completed": sp.completed,
-                    "failed": sp.failed,
-                    "interrupted": sp.interrupted,
-                    "reviewer_rejections": sp.reviewer_rejections,
-                    "total_cost_usd": sp.total_cost_usd,
-                    "avg_duration_seconds": sp.avg_duration_seconds,
-                    "avg_turns": sp.avg_turns,
-                    "success_rate": sp.success_rate,
-                }
-            )
-        payload = {
-            "total_missions": result.total_missions,
-            "total_cost_usd": result.total_cost_usd,
-            "by_project": result.by_project,
-            "by_specialist": rows,
-        }
-        output.info(json.dumps(payload, indent=2))
+        _print_json(result)
         return
 
-    if not result.by_specialist:
-        output.info("no missions recorded" + (" (filters may be too narrow)" if any([project, specialist, since]) else ""))
+    if as_csv:
+        _print_csv(result, by_project=by_project)
         return
 
+    if by_project:
+        _print_table_by_project(result)
+    else:
+        _print_table_by_specialist(result)
+
+    _print_totals(result)
+
+
+# ----- Output helpers -------------------------------------------------------
+
+
+def _print_json(result: StatsResult) -> None:
+    """Serialise *result* to JSON and write to stdout.
+
+    Uses :func:`dataclasses.asdict` so the dataclass fields serialize cleanly;
+    TypedDicts embedded in the dataclass are plain dicts at runtime and pass
+    through as-is.
+    """
+    sys.stdout.write(json.dumps(dataclasses.asdict(result), indent=2))
+    sys.stdout.write("\n")
+
+
+def _print_csv(result: StatsResult, *, by_project: bool) -> None:
+    """Write CSV to stdout.
+
+    Columns depend on pivot mode:
+
+    * per-specialist (default): specialist, missions, cost, avg_duration,
+      success_rate
+    * ``--by-project``: project, missions, cost, avg_duration, success_rate
+
+    Args:
+        result: The aggregated stats.
+        by_project: When ``True``, emit per-project rows.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    if by_project:
+        writer.writerow(["project", "missions", "cost", "success_rate"])
+        for proj_id, ps in sorted(result.by_project.items()):
+            writer.writerow([
+                ps["project_name"],
+                ps["missions"],
+                f"{ps['total_cost']:.4f}",
+                f"{ps['success_rate']:.2%}",
+            ])
+    else:
+        writer.writerow(
+            ["specialist", "missions", "cost", "avg_duration", "avg_turns",
+             "success_rate"]
+        )
+        for spec, ss in sorted(result.by_specialist.items()):
+            writer.writerow([
+                spec,
+                ss["missions"],
+                f"{ss['total_cost']:.4f}",
+                f"{ss['avg_duration']:.1f}",
+                f"{ss['avg_turns']:.1f}",
+                f"{ss['success_rate']:.2%}",
+            ])
+    sys.stdout.write(buf.getvalue())
+
+
+def _print_table_by_specialist(result: StatsResult) -> None:
+    """Render a Rich table with one row per specialist.
+
+    Columns: specialist | missions | completed | failed | review_rejected |
+             avg_cost | avg_duration | avg_turns | success_rate
+    """
     table = Table(show_header=True, header_style="bold")
     table.add_column("specialist")
     table.add_column("missions", justify="right")
-    table.add_column("cost (USD)", justify="right")
-    table.add_column("avg duration", justify="right")
+    table.add_column("completed", justify="right")
+    table.add_column("failed", justify="right")
+    table.add_column("rev.rejected", justify="right")
+    table.add_column("avg cost", justify="right")
+    table.add_column("avg dur(s)", justify="right")
     table.add_column("avg turns", justify="right")
-    table.add_column("success rate", justify="right")
+    table.add_column("success %", justify="right")
 
-    for sp in sorted(result.by_specialist.values(), key=lambda s: s.specialist):
-        dur = sp.avg_duration_seconds
-        dur_str = f"{dur:.0f}s" if dur is not None else "—"
-        turns_str = f"{sp.avg_turns:.1f}" if sp.avg_turns is not None else "—"
-        rate = sp.success_rate
-        if rate is None:
-            rate_str = "—"
-        elif rate >= 0.9:
-            rate_str = f"[green]{rate:.0%}[/green]"
-        elif rate >= 0.6:
-            rate_str = f"[yellow]{rate:.0%}[/yellow]"
-        else:
-            rate_str = f"[red]{rate:.0%}[/red]"
-
+    for spec, ss in sorted(result.by_specialist.items()):
         table.add_row(
-            sp.specialist,
-            str(sp.mission_count),
-            f"${sp.total_cost_usd:.4f}",
-            dur_str,
-            turns_str,
-            rate_str,
+            spec,
+            str(ss["missions"]),
+            str(ss["completed"]),
+            str(ss["failed"]),
+            str(ss["review_rejected"]),
+            f"${ss['avg_cost']:.4f}",
+            f"{ss['avg_duration']:.1f}",
+            f"{ss['avg_turns']:.1f}",
+            f"{ss['success_rate']:.1%}",
         )
 
     output.print_table(table)
+
+
+def _print_table_by_project(result: StatsResult) -> None:
+    """Render a Rich table with one row per project.
+
+    Columns: project | missions | completed | total_cost | success_rate
+    """
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("project")
+    table.add_column("missions", justify="right")
+    table.add_column("completed", justify="right")
+    table.add_column("total cost", justify="right")
+    table.add_column("success %", justify="right")
+
+    for _proj_id, ps in sorted(
+        result.by_project.items(), key=lambda kv: kv[1]["project_name"]
+    ):
+        table.add_row(
+            ps["project_name"],
+            str(ps["missions"]),
+            str(ps["completed"]),
+            f"${ps['total_cost']:.4f}",
+            f"{ps['success_rate']:.1%}",
+        )
+
+    output.print_table(table)
+
+
+def _print_totals(result: StatsResult) -> None:
+    """Print the global totals line below the main table.
+
+    Args:
+        result: The aggregated stats to summarise.
+    """
+    t = result.totals
+    label = f"since filter applied" if result.filtered_count != t["missions"] else ""
     output.info(
-        f"[dim]total {result.total_missions} missions · ${result.total_cost_usd:.4f} total cost[/dim]"
+        f"[dim]total missions: {t['missions']}  "
+        f"completed: {t['completed']}  "
+        f"total cost: ${t['total_cost']:.4f}  "
+        f"success: {t['success_rate']:.1%}"
+        + (f"  ({label})" if label else "")
+        + "[/dim]"
     )
