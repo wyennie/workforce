@@ -164,6 +164,27 @@ workforce memory compact <name>   # coming soon
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of how Workforce dispatches missions, manages worktrees, and handles the reviewer loop.
 
+## Configuration
+
+Global defaults live in `~/.workforce/config.toml`. All keys are optional; CLI flags always take precedence.
+
+```toml
+default_model = "claude-sonnet-4-5"
+max_turns = 80
+max_cost  = 10.0
+```
+
+Manage it with the built-in subcommands:
+
+```bash
+workforce config get                  # show current settings
+workforce config set max_turns 80     # write a value
+workforce config set max_cost 10.0
+workforce config set default_model "claude-sonnet-4-5"
+```
+
+Or edit `~/.workforce/config.toml` directly.
+
 ## Commit policy
 
 Specialists commit their own work as they go, in the worktree's branch. Conventional-commits style, authored as you (Workforce never overrides `user.name`/`user.email`). A per-specialist `Co-Authored-By: <name> <name>@workforce.local` trailer credits which specialist did the work.
