@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, config, dispatch, manage, memory, mission, project, roster, stats, webhook
+from . import cleanup, config, dispatch, init, manage, memory, mission, project, roster, stats, webhook
 
 app = typer.Typer(
     name="workforce",
@@ -41,6 +41,11 @@ def _root(
     ),
 ) -> None:
     """Workforce: a staffing agency for AI engineers."""
+
+
+# ----- init -----------------------------------------------------------------
+
+app.command("init")(init.init_command)
 
 
 # ----- doctor ---------------------------------------------------------------
