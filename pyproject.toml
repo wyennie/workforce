@@ -26,6 +26,10 @@ dev = [
     "mypy>=1.10",
     "ruff>=0.7",
 ]
+webhook = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+]
 
 [project.scripts]
 workforce = "workforce.cli:app"
