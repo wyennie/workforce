@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, config, dispatch, init, manage, memory, mission, project, roster, stats, webhook
+from . import cleanup, config, dispatch, init, manage, memory, mission, project, roster, stats, ticket, webhook
 
 app = typer.Typer(
     name="workforce",
@@ -135,6 +135,12 @@ memory_sub.command("export")(memory.memory_export)
 memory_sub.command("import")(memory.memory_import)
 memory_sub.command("compact")(memory.memory_compact)
 app.add_typer(memory_sub)
+
+
+# ----- ticket ------------------------------------------------------------------
+
+app.add_typer(ticket.sub)
+
 
 
 branches_sub = typer.Typer(
