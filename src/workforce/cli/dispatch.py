@@ -30,6 +30,7 @@ from claude_agent_sdk import (
 from rich.table import Table
 
 from workforce import (
+    github as github_mod,
     manager,
     mission,
     output,
@@ -474,6 +475,41 @@ def dispatch_command(
         False, "--require-review",
         help="With --ci: fail with exit code 2 if --review was not also passed.",
     ),
+    github_issue: str | None = typer.Option(
+        None, "--github-issue",
+        metavar="URL",
+        help=(
+            "Fetch the ticket text from a GitHub issue. "
+            "Accepts https://github.com/owner/repo/issues/N or owner/repo#N. "
+            "Mutually exclusive with positional ticket and --github-pr."
+        ),
+    ),
+    github_pr: str | None = typer.Option(
+        None, "--github-pr",
+        metavar="URL",
+        help=(
+            "Fetch the ticket text from a GitHub PR description. "
+            "Accepts https://github.com/owner/repo/pull/N or owner/repo#N. "
+            "Mutually exclusive with positional ticket and --github-issue."
+        ),
+    ),
+    open_pr: bool = typer.Option(
+        False, "--open-pr",
+        help=(
+            "After a successful --auto-merge, create a GitHub PR for the "
+            "mission branch. Requires gh CLI. Use --pr-base to set the target "
+            "branch (default 'main') and --pr-draft to mark the PR as a draft."
+        ),
+    ),
+    pr_base: str = typer.Option(
+        "main", "--pr-base",
+        metavar="BRANCH",
+        help="Base branch for the GitHub PR opened by --open-pr. Default 'main'.",
+    ),
+    pr_draft: bool = typer.Option(
+        False, "--pr-draft",
+        help="Create the GitHub PR in draft mode (implies --open-pr).",
+    ),
 ) -> None:
     """Dispatch a mission. The Manager plans it, then it runs.
 
@@ -501,7 +537,31 @@ def dispatch_command(
     # Resolve output_file path early (before anything that might exit).
     output_file_path: Path | None = Path(output_file) if output_file is not None else None
 
-    # Resolve ticket text from whichever source was specified.
+    # --pr-draft implies --open-pr.
+    if pr_draft:
+        open_pr = True
+
+    # Resolve ticket text from whichever source was specified (including GitHub sources).
+    if github_issue is not None or github_pr is not None:
+        # GitHub ticket sources take precedence over --file/--stdin.
+        if ticket is not None or file is not None or stdin:
+            output.die(
+                "conflicting ticket sources: use at most one of the positional "
+                "ticket argument, --file, --stdin, --github-issue, or --github-pr"
+            )
+        if github_issue is not None and github_pr is not None:
+            output.die("--github-issue and --github-pr are mutually exclusive")
+        if github_issue is not None:
+            try:
+                ticket = github_mod.fetch_issue(github_issue)
+            except (ValueError, RuntimeError) as e:
+                output.die(str(e))
+        elif github_pr is not None:
+            try:
+                ticket = github_mod.fetch_pr(github_pr)
+            except (ValueError, RuntimeError) as e:
+                output.die(str(e))
+
     ticket_text = _read_ticket(ticket, file, stdin)
 
     if window and background:
@@ -647,6 +707,9 @@ def dispatch_command(
             base_branch=branch,
             ci=ci,
             output_file=output_file_path,
+            open_pr=open_pr,
+            pr_base=pr_base,
+            pr_draft=pr_draft,
         )
         return
 
@@ -666,6 +729,9 @@ def dispatch_command(
         dry_run=dry_run,
         ci=ci,
         output_file=output_file_path,
+        open_pr=open_pr,
+        pr_base=pr_base,
+        pr_draft=pr_draft,
     )
 
 
@@ -686,6 +752,9 @@ def _dispatch_direct(
     base_branch: str | None = None,
     ci: bool = False,
     output_file: Path | None = None,
+    open_pr: bool = False,
+    pr_base: str = "main",
+    pr_draft: bool = False,
 ) -> None:
     """Single specialist, no Manager. The --specialist X bypass."""
     output.info(
@@ -714,6 +783,8 @@ def _dispatch_direct(
     _print_summary(meta)
     if auto_merge:
         _run_auto_merge_single(proj, meta, target=merge_into)
+        if open_pr and meta.status is MissionStatus.COMPLETED:
+            _maybe_create_pr(proj, meta, pr_base=pr_base, pr_draft=pr_draft)
     if ci:
         _write_ci_summary(_ci_summary_single(meta), output_file)
     if meta.status is not MissionStatus.COMPLETED:
@@ -890,6 +961,9 @@ def _dispatch_with_manager(
     dry_run: bool = False,
     ci: bool = False,
     output_file: Path | None = None,
+    open_pr: bool = False,
+    pr_base: str = "main",
+    pr_draft: bool = False,
 ) -> None:
     """Run Manager, branch on `kind`: single → mission.dispatch; else parallel."""
     if not proj.assigned_specialists and not auto_staff:
@@ -956,6 +1030,7 @@ def _dispatch_with_manager(
             base_branch=base_branch,
             ci=ci,
             output_file=output_file,
+            open_pr=open_pr, pr_base=pr_base, pr_draft=pr_draft,
         )
     else:
         _dispatch_after_manager_parallel(
@@ -968,6 +1043,7 @@ def _dispatch_with_manager(
             base_branch=base_branch,
             ci=ci,
             output_file=output_file,
+            open_pr=open_pr, pr_base=pr_base, pr_draft=pr_draft,
         )
 
 
@@ -989,6 +1065,9 @@ def _dispatch_after_manager_single(
     base_branch: str | None = None,
     ci: bool = False,
     output_file: Path | None = None,
+    open_pr: bool = False,
+    pr_base: str = "main",
+    pr_draft: bool = False,
 ) -> None:
     """Manager said single. Use its specialist suggestion, dispatch one mission."""
     if not decomp.tasks:
@@ -1050,6 +1129,8 @@ def _dispatch_after_manager_single(
     _print_summary(meta)
     if auto_merge:
         _run_auto_merge_single(proj, meta, target=merge_into)
+        if open_pr and meta.status is MissionStatus.COMPLETED:
+            _maybe_create_pr(proj, meta, pr_base=pr_base, pr_draft=pr_draft)
     if ci:
         _write_ci_summary(_ci_summary_single(meta), output_file)
     if meta.status is not MissionStatus.COMPLETED:
@@ -1078,6 +1159,9 @@ def _dispatch_after_manager_parallel(
     base_branch: str | None = None,
     ci: bool = False,
     output_file: Path | None = None,
+    open_pr: bool = False,
+    pr_base: str = "main",
+    pr_draft: bool = False,
 ) -> None:
     """Manager said parallel/sequential. Confirm-loop here, then orchestrate."""
     parent_mission_id = mission.generate_mission_id()
@@ -1148,6 +1232,7 @@ def _dispatch_after_manager_parallel(
                 base_branch=base_branch,
                 ci=ci,
                 output_file=output_file,
+                open_pr=open_pr, pr_base=pr_base, pr_draft=pr_draft,
             )
             return
         # Loop back: validate + resolve + confirm the new plan.
@@ -1210,6 +1295,12 @@ def _dispatch_after_manager_parallel(
 
     if auto_merge:
         _run_auto_merge_parallel(proj, result.parent_meta, result.sub_metas, target=merge_into)
+        if open_pr and result.parent_meta.status is ParallelStatus.COMPLETED:
+            # For parallel missions, create one PR per successfully completed
+            # sub-mission branch.
+            for sub in result.sub_metas:
+                if sub.status is MissionStatus.COMPLETED and sub.branch:
+                    _maybe_create_pr(proj, sub, pr_base=pr_base, pr_draft=pr_draft)
 
     if ci:
         _write_ci_summary(_ci_summary_parallel(result.parent_meta, result.sub_metas), output_file)
@@ -1368,6 +1459,53 @@ def _make_manager_renderer() -> Any:
                 # output is raw JSON; rendering it would confuse users.
 
     return render
+
+
+def _maybe_create_pr(
+    proj: project_mod.Project,
+    meta: MissionMeta,
+    *,
+    pr_base: str,
+    pr_draft: bool,
+) -> None:
+    """Create a GitHub PR for *meta*'s branch.
+
+    Reads title from the first line of result.md (or the first commit subject),
+    body from the full result.md content (truncated to 65 000 chars), and calls
+    ``github.create_pr``.  Prints the resulting PR URL on success or a warning
+    on failure.
+    """
+    if meta.branch is None:
+        output.warn("--open-pr skipped: no branch (workspace mission)")
+        return
+
+    mp = mission.mission_paths(proj.id, meta.mission_id)
+    body = ""
+    title = ""
+
+    if mp.result.exists():
+        body = mp.result.read_text(encoding="utf-8")
+        first_line = body.splitlines()[0].lstrip("#").strip() if body.splitlines() else ""
+        title = first_line
+
+    if not title and meta.commits:
+        title = meta.commits[0].subject.strip()
+
+    if not title:
+        title = f"workforce mission {meta.mission_id}"
+
+    try:
+        pr_url = github_mod.create_pr(
+            repo_path=str(proj.repo_path),
+            branch=meta.branch,
+            title=title,
+            body=body,
+            base=pr_base,
+            draft=pr_draft,
+        )
+        output.success(f"PR opened: {pr_url}")
+    except RuntimeError as e:
+        output.warn(f"--open-pr failed: {e}")
 
 
 def _print_parallel_summary(parent: ParallelMissionMeta, subs: list[MissionMeta]) -> None:
