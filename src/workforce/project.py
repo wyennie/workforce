@@ -359,6 +359,3 @@ class ProjectStore:
         shutil.rmtree(self._dir(project_id))
 
 
-#: Convenience alias for use in budget.py and anywhere else that references the
-#: project's configuration model without importing the full Project class name.
-ProjectConfig = Project
