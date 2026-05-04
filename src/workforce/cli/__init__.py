@@ -14,7 +14,7 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, config, dispatch, init, manage, marketplace, memory, mission, project, roster, stats, ticket, webhook
+from . import cleanup, config, dispatch, init, manage, marketplace, memory, mission, project, roster, serve, stats, ticket, webhook
 
 app = typer.Typer(
     name="workforce",
@@ -165,6 +165,11 @@ app.command("stats")(stats.stats_command)
 # ----- webhook daemon -------------------------------------------------------
 
 app.add_typer(webhook.sub)
+
+
+# ----- serve (web dashboard) ------------------------------------------------
+
+app.command("serve")(serve.serve_command)
 
 
 # ----- manage (interactive Manager chat) ------------------------------------

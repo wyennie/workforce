@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Roster — Workforce{% endblock %}
+{% block content %}
+<h1>Roster</h1>
+
+{% if specialists %}
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Role</th>
+      <th>Missions</th>
+      <th>Completed</th>
+      <th>Failed</th>
+      <th>Total Cost</th>
+      <th>Memory</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in specialists %}
+    <tr>
+      <td><strong>{{ row.spec.name }}</strong></td>
+      <td style="color:#555">{{ row.spec.role }}</td>
+      <td>{{ row.missions }}</td>
+      <td>{{ row.stats.missions_completed }}</td>
+      <td>{{ row.stats.missions_failed }}</td>
+      <td>{{ fmt_cost(row.cost) }}</td>
+      <td>
+        {% if row.memory_bytes > 0 %}
+        {{ row.memory_bytes }} B
+        {% else %}
+        <span style="color:#aaa">—</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No specialists hired yet. Run <code>workforce hire</code> to add one.</p>
+{% endif %}
+{% endblock %}
