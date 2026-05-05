@@ -90,6 +90,8 @@ State lives at `~/.workforce/` by default. Override with `WORKFORCE_HOME=/path/t
 ## Commands
 
 ```
+# Setup
+workforce init [--template NAME] [--blank] [--list] [--demo]  # scaffold a new project
 workforce doctor                       # environment check
 
 # Roster
@@ -121,6 +123,37 @@ workforce replay <id>
 
 # Branches
 workforce branches prune <project> [--into main] [--dry-run] [-y]
+
+# Config
+workforce config get
+workforce config set <key> <value>
+
+# Memory
+workforce memory show <specialist>
+workforce memory search <specialist> <query>
+workforce memory export <specialist>
+workforce memory import <specialist> <file>
+workforce memory compact <specialist>
+
+# Ticket templates
+workforce ticket new [TYPE]            # scaffold from template and open in editor
+workforce ticket new --list            # list available types
+
+# Specialist marketplace
+workforce specialist search [QUERY]                         # browse the registry
+workforce specialist install <slug> [--name <name>]         # download and install
+workforce specialist publish <name> [--output-dir DIR]      # export for marketplace PR
+
+# Webhook daemon  (requires [webhook] extras)
+workforce webhook start [--port 8080] [--host 0.0.0.0] [--config FILE]
+workforce webhook status
+workforce webhook stop
+
+# Web dashboard  (requires [web] extras)
+workforce serve [--port 8080] [--host 127.0.0.1] [--reload]
+
+# MCP server  (requires [mcp] extras)
+workforce mcp-server
 ```
 
 ### How dispatch decides
@@ -158,6 +191,149 @@ Each specialist accumulates a memory file that grows over time as missions compl
 
 ```
 workforce memory compact <name>   # coming soon
+```
+
+## Project initialisation (`workforce init`)
+
+`workforce init` registers the current directory as a Workforce project, writes a `WORKFORCE.md` template, and optionally hires a preconfigured set of specialists in one step.
+
+```bash
+# See available stack templates
+workforce init --list
+
+# Scaffold with a template (hires specialists, writes .workforce.toml)
+workforce init --template fastapi
+workforce init --template react-app --name my-app
+
+# Register without any specialists
+workforce init --blank
+
+# Spin up a toy calculator demo to try Workforce with no setup
+workforce init --demo
+```
+
+Available stack templates: `django-api`, `fastapi`, `react-app`, `next-js`, `monorepo`, `data-pipeline`, `cli-tool`. Each template hires the right specialist roles and seeds `WORKFORCE.md` with project-specific hints.
+
+After init, fill in `WORKFORCE.md` with your project context — the Manager reads it before decomposing every ticket.
+
+## Web dashboard (`workforce serve`)
+
+`workforce serve` starts a local browser dashboard. Requires the `[web]` extras:
+
+```bash
+pip install 'workforce-ai[web]'
+workforce serve            # http://127.0.0.1:8080/
+workforce serve --port 3000 --host 0.0.0.0
+workforce serve --reload   # dev mode: auto-reloads on code changes
+```
+
+The dashboard shows active and past missions, per-specialist stats, and the current roster. It is read-only; all mutations go through the CLI.
+
+## Specialist Marketplace
+
+The specialist marketplace is a shared registry of community-contributed specialist definitions. Browse, install, and contribute without leaving the CLI.
+
+**Search and install:**
+
+```bash
+# Browse the full registry
+workforce specialist search
+
+# Filter by keyword
+workforce specialist search go
+workforce specialist search "frontend react"
+
+# Install a specialist (you'll be prompted for a local name)
+workforce specialist install backend-go
+workforce specialist install backend-go --name go-api
+
+# Assign to a project
+workforce project assign myapp go-api
+```
+
+**Publish your own specialist:**
+
+```bash
+# Export a local specialist for submission
+workforce specialist publish aria --output-dir ./specialists/aria
+```
+
+This writes `specialist.toml` and a `README.md` stub. Fork [workforce-ai/specialists](https://github.com/workforce-ai/specialists), copy the directory under `specialists/`, add an entry to `specialists/index.json`, and open a pull request.
+
+Memory and stats are never included in exports — they are local runtime artifacts.
+
+## Webhook daemon
+
+The webhook daemon listens for GitHub webhook events (push, pull request, workflow run, etc.) and triggers Workforce actions automatically. Requires the `[webhook]` extras:
+
+```bash
+pip install 'workforce-ai[webhook]'
+```
+
+**Configuration** — create `~/.workforce/webhook.toml` (or point to a custom path with `--config`):
+
+```toml
+secret = "your-github-webhook-secret"
+
+[[routes]]
+event = "push"
+ref   = "refs/heads/main"
+project = "myapp"
+specialist = "backend"
+```
+
+**Manage the daemon:**
+
+```bash
+workforce webhook start                          # bind 0.0.0.0:8080
+workforce webhook start --port 9000 --host 127.0.0.1
+workforce webhook start --config /path/to/webhook.toml
+
+workforce webhook status   # check if running, show PID
+workforce webhook stop     # send SIGTERM
+```
+
+The daemon writes its PID to `~/.workforce/webhook.pid`. Point your GitHub repo's webhook at `http://<host>:<port>/webhook` with the same secret from the config file.
+
+## Ticket templates (`workforce ticket`)
+
+`workforce ticket new` opens a structured ticket in your `$EDITOR` and optionally dispatches it when you save.
+
+```bash
+# List available types
+workforce ticket new --list
+
+# Create a ticket interactively (prompts for type if omitted)
+workforce ticket new
+workforce ticket new bug-fix
+workforce ticket new feature
+```
+
+Available types: `bug-fix`, `feature`, `refactor`, `chore`, `docs`. Each template is pre-filled with the relevant sections (steps to reproduce, acceptance criteria, etc.) as Markdown comment placeholders. Edit, save, quit — Workforce shows the content and asks whether to dispatch immediately. The temp file path is printed so you can dispatch manually:
+
+```bash
+workforce dispatch myapp --file /tmp/workforce-ticket-XXXX.md
+```
+
+## MCP server (`workforce mcp-server`)
+
+`workforce mcp-server` starts an [MCP](https://spec.modelcontextprotocol.io/) server on stdio, exposing Workforce capabilities (dispatch, project list, roster, mission status) as tools that Claude Code can call directly. Requires the `[mcp]` extras:
+
+```bash
+pip install 'workforce-ai[mcp]'
+```
+
+Add to `~/.claude/claude.json` to make Workforce available in every Claude Code session:
+
+```json
+{
+  "mcpServers": {
+    "workforce": {
+      "command": "workforce",
+      "args": ["mcp-server"]
+    }
+  }
+}
 ```
 
 ## Architecture
