@@ -13,7 +13,7 @@
   <tr><td>Turns</td>     <td>{{ meta.turn_count }}</td></tr>
   <tr><td>Duration</td>  <td>{{ fmt_duration(meta.duration_seconds) }}</td></tr>
   <tr><td>Started</td>   <td>{{ meta.started_at }}</td></tr>
-  <tr><td>Ended</td>     <td>{{ meta.ended_at }}</td></tr>
+  <tr><td>Ended</td>     <td>{{ meta.ended_at if meta.ended_at else "in progress…" }}</td></tr>
   {% if meta.branch %}
   <tr><td>Branch</td>    <td><code>{{ meta.branch }}</code></td></tr>
   {% endif %}

@@ -45,6 +45,7 @@ SCHEMA_VERSION = 1
 
 
 class MissionStatus(StrEnum):
+    RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
     WALL_TIMEOUT = "wall_timeout"
@@ -105,8 +106,8 @@ class MissionMeta(BaseModel):
     worktree_path: str | None = None
     base_sha: str | None = None
     started_at: str  # ISO-8601 UTC
-    ended_at: str
-    duration_seconds: float
+    ended_at: str | None = None  # None while the mission is still running
+    duration_seconds: float = 0.0
     status: MissionStatus
     error_detail: str | None = None
     cost_usd: float = 0.0
@@ -511,6 +512,26 @@ async def dispatch(
             repo_path, project.id, mission_id, start_point=start_point
         )
         env = _Env(cwd=wt.worktree_path, branch=wt.branch, base_sha=wt.base_sha)
+
+    # Write a stub meta.json immediately so the web dashboard can show this
+    # mission as "running" before it completes.  The final write at mission
+    # end will overwrite it with the real status and timing fields.
+    _atomic_write(
+        mp.meta,
+        MissionMeta(
+            mission_id=mission_id,
+            project_id=project.id,
+            project_name=project.name,
+            specialist=specialist.name,
+            model=specialist.model,
+            ticket=ticket,
+            branch=env.branch,
+            worktree_path=str(env.cwd),
+            base_sha=env.base_sha,
+            started_at=started_iso,
+            status=MissionStatus.RUNNING,
+        ).model_dump_json(indent=2) + "\n",
+    )
 
     # User prompt now that we know the cwd — name it explicitly so the model
     # doesn't waste turns rediscovering its cwd.

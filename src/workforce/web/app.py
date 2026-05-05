@@ -73,7 +73,15 @@ def _status_badge(status: str) -> str:
     """Return an HTML badge span for a mission status string."""
     ok = {"completed"}
     warn = {"review_rejected", "interrupted"}
-    cls = "badge-ok" if status in ok else ("badge-warn" if status in warn else "badge-err")
+    run = {"running"}
+    if status in run:
+        cls = "badge-run"
+    elif status in ok:
+        cls = "badge-ok"
+    elif status in warn:
+        cls = "badge-warn"
+    else:
+        cls = "badge-err"
     return f'<span class="badge {cls}">{status}</span>'
 
 
@@ -263,9 +271,19 @@ async def _sse_generator(mission_id: str):  # type: ignore[return]
     meta_path = events_path.parent / "meta.json"
     lines_sent = 0
 
+    def _is_running() -> bool:
+        """Return True while the mission has not yet written a terminal status."""
+        if not meta_path.is_file():
+            return True  # No meta.json at all — mission hasn't started its stub yet
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+            return data.get("status") == "running"
+        except Exception:
+            return False  # Unreadable meta → treat as done
+
     try:
         while True:
-            is_running = not meta_path.is_file()
+            is_running = _is_running()
 
             if events_path.is_file():
                 text = events_path.read_text(encoding="utf-8", errors="replace")

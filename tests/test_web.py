@@ -279,3 +279,50 @@ def test_roster_shows_specialist(client: TestClient) -> None:
     assert resp.status_code == 200
     assert "builder" in resp.text
     assert "Backend engineer" in resp.text
+
+
+# ── running-status (mission appears before completion) ────────────────────────
+
+
+def test_running_mission_appears_in_list(client: TestClient) -> None:
+    """A mission with status=running should appear in the dashboard list."""
+    running = _make_meta(status=MissionStatus.RUNNING, ended_at=None, duration_seconds=0.0)
+    with patch("workforce.web.app._load_all_missions", return_value=[running]):
+        resp = client.get("/")
+    assert resp.status_code == 200
+    assert running.mission_id in resp.text
+    assert "running" in resp.text
+
+
+def test_running_mission_detail_shows_in_progress(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The detail page for a running mission shows 'in progress' for Ended."""
+    running = _make_meta(
+        status=MissionStatus.RUNNING,
+        ended_at=None,
+        duration_seconds=0.0,
+    )
+    mp = MissionPaths(root=tmp_path)
+    mp.ticket.write_text("Ongoing work\n")
+    with (
+        patch("workforce.web.app._load_all_missions", return_value=[running]),
+        patch("workforce.web.app.mission_paths", return_value=mp),
+    ):
+        resp = client.get(f"/mission/{running.mission_id}")
+    assert resp.status_code == 200
+    assert "in progress" in resp.text
+
+
+def test_running_status_filter(client: TestClient) -> None:
+    """Filtering by status=running shows only running missions."""
+    running = _make_meta(status=MissionStatus.RUNNING, ended_at=None, duration_seconds=0.0)
+    done = _make_meta(
+        mission_id="m-20260501-120000-zzzz",
+        status=MissionStatus.COMPLETED,
+    )
+    with patch("workforce.web.app._load_all_missions", return_value=[running, done]):
+        resp = client.get("/?status=running")
+    assert resp.status_code == 200
+    assert running.mission_id in resp.text
+    assert done.mission_id not in resp.text

@@ -17,6 +17,7 @@
     Status
     <select name="status">
       <option value="">All statuses</option>
+      <option value="running"        {% if filter_status == "running"        %}selected{% endif %}>running</option>
       <option value="completed"      {% if filter_status == "completed"      %}selected{% endif %}>completed</option>
       <option value="error"          {% if filter_status == "error"          %}selected{% endif %}>error</option>
       <option value="wall_timeout"   {% if filter_status == "wall_timeout"   %}selected{% endif %}>wall_timeout</option>
