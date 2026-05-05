@@ -14,7 +14,7 @@ def serve_command(
 
     Requires the [web] optional extras:
 
-        pip install 'workforce[web]'
+        uv tool install 'workforce-ai[web]'
 
     Opens a browser-accessible dashboard at http://<host>:<port>/ showing
     missions, stats, and the specialist roster.
@@ -26,7 +26,7 @@ def serve_command(
 
         output.die(
             "workforce[web] extras not installed. "
-            "Run: pip install 'workforce[web]'"
+            "Run: uv tool install 'workforce-ai[web]'"
         )
         return  # unreachable; silences mypy
 
