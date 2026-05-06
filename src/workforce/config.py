@@ -7,17 +7,9 @@ new installs work out of the box without any setup.
 
 from __future__ import annotations
 
-import sys
+import tomllib
 import warnings
 from typing import Optional
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib  # type: ignore[no-redef]
 
 from pydantic import BaseModel
 

@@ -158,11 +158,6 @@ branches_sub.command("prune")(cleanup.branches_prune)
 app.add_typer(branches_sub)
 
 
-# ----- stats ----------------------------------------------------------------
-
-app.command("stats")(stats.stats_command)
-
-
 # ----- webhook daemon -------------------------------------------------------
 
 app.add_typer(webhook.sub)

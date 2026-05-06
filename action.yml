@@ -86,27 +86,34 @@ runs:
       shell: bash
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_TICKET: ${{ inputs.ticket }}
+        INPUT_TICKET_FILE: ${{ inputs.ticket-file }}
+        INPUT_SPECIALIST: ${{ inputs.specialist }}
+        INPUT_AUTO_MERGE: ${{ inputs.auto-merge }}
+        INPUT_OPEN_PR: ${{ inputs.open-pr }}
+        INPUT_MAX_COST: ${{ inputs.max-cost }}
       run: |
         set -euo pipefail
         OUTPUT_FILE="$(mktemp /tmp/workforce-result-XXXXXXXX.json)"
         echo "output-file=${OUTPUT_FILE}" >> "$GITHUB_OUTPUT"
 
-        ARGS=(workforce dispatch "${{ inputs.project }}" --ci --output-file "${OUTPUT_FILE}")
+        ARGS=(workforce dispatch "${INPUT_PROJECT}" --ci --output-file "${OUTPUT_FILE}")
 
         # Inline ticket vs. file
-        if [[ -n "${{ inputs.ticket }}" ]]; then
-          ARGS+=("${{ inputs.ticket }}")
-        elif [[ -n "${{ inputs.ticket-file }}" ]]; then
-          ARGS+=(--file "${{ inputs.ticket-file }}")
+        if [[ -n "${INPUT_TICKET}" ]]; then
+          ARGS+=("${INPUT_TICKET}")
+        elif [[ -n "${INPUT_TICKET_FILE}" ]]; then
+          ARGS+=(--file "${INPUT_TICKET_FILE}")
         else
           echo "::error::Either 'ticket' or 'ticket-file' must be provided."
           exit 1
         fi
 
-        [[ -n "${{ inputs.specialist }}" ]] && ARGS+=(--specialist "${{ inputs.specialist }}")
-        [[ "${{ inputs.auto-merge }}" == "true" ]] && ARGS+=(--auto-merge)
-        [[ "${{ inputs.open-pr }}"   == "true" ]] && ARGS+=(--open-pr)
-        [[ -n "${{ inputs.max-cost }}" ]] && ARGS+=(--max-cost "${{ inputs.max-cost }}")
+        [[ -n "${INPUT_SPECIALIST}" ]] && ARGS+=(--specialist "${INPUT_SPECIALIST}")
+        [[ "${INPUT_AUTO_MERGE}" == "true" ]] && ARGS+=(--auto-merge)
+        [[ "${INPUT_OPEN_PR}"    == "true" ]] && ARGS+=(--open-pr)
+        [[ -n "${INPUT_MAX_COST}" ]] && ARGS+=(--max-cost "${INPUT_MAX_COST}")
 
         "${ARGS[@]}"
 
