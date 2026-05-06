@@ -103,11 +103,13 @@ workforce templates
 workforce refresh                      # re-apply latest preamble to existing specialists
 
 # Projects
-workforce project add <path> [--name <name>]
+workforce project add <path> [--name <name>] [--workspace | --repo]
 workforce project assign <project> <specialist>...
 workforce project unassign <project> <specialist>
 workforce project list
 workforce project show <project>
+workforce project tail <project>
+workforce project config <project>
 workforce project forget <project> -y  # remove registration + memory; leaves the repo alone
 workforce project nuke <project> -y    # remove all branches, worktrees, and mission history. Irreversible.
 
@@ -117,6 +119,9 @@ workforce manage <project> [--branch <name>] [--yolo]   # interactive Manager ch
 workforce stats [--project P] [--specialist S] [--since DATE] [--json]  # aggregated mission stats
 workforce missions <project>
 workforce mission show <id>
+workforce mission retry <id>
+workforce mission diff <id>
+workforce mission tail <id>
 workforce mission clean <id>
 workforce mission prune --older-than 30d
 workforce replay <id>
@@ -130,10 +135,10 @@ workforce config set <key> <value>
 
 # Memory
 workforce memory show <specialist>
-workforce memory search <specialist> <query>
+workforce memory search <specialist> <query> [--project PROJECT]
 workforce memory export <specialist>
-workforce memory import <specialist> <file>
-workforce memory compact <specialist>
+workforce memory import <specialist> --file <file> [-f <file>] [--project] [--cross-project]
+workforce memory compact <specialist> [--project P] [--keep-last N] [--threshold-tokens N] [--yes]
 
 # Ticket templates
 workforce ticket new [TYPE]            # scaffold from template and open in editor
@@ -179,7 +184,7 @@ With `--review`, after each sub-mission a Reviewer specialist (read-only) inspec
 
 ### Workspace project kind
 
-A _workspace_ project (`workforce project add <path> --kind workspace`) differs from a normal git project:
+A _workspace_ project (`workforce project add <path> --workspace`) differs from a normal git project:
 
 - **No git isolation**: missions run directly in the workspace directory; there are no worktrees or branches.
 - **`--review`, `--auto-merge`, and `--branch` are not available** — all specialists share the working directory, so branching is not applicable.
@@ -187,11 +192,16 @@ A _workspace_ project (`workforce project add <path> --kind workspace`) differs 
 
 ### Memory growth
 
-Each specialist accumulates a memory file that grows over time as missions complete. Large memory files slow context loading. Periodically compact it once tooling is available:
+Each specialist accumulates a memory file that grows over time as missions complete. Large memory files slow context loading. Compact a specialist's memory periodically:
 
 ```
-workforce memory compact <name>   # coming soon
+workforce memory compact <name> [--project P] [--keep-last N] [--threshold-tokens N] [--yes]
 ```
+
+- `--project P` — compact only that specialist's per-project memory for project `P`; omit to compact cross-project memory
+- `--keep-last N` — always retain the most recent N entries regardless of token count
+- `--threshold-tokens N` — only run if the memory file exceeds this many tokens (skip if already small)
+- `--yes` — skip the confirmation prompt
 
 ## Project initialisation (`workforce init`)
 
@@ -342,6 +352,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed description of how Workfor
 
 ## Configuration
 
+### Global config (`~/.workforce/config.toml`)
+
 Global defaults live in `~/.workforce/config.toml`. All keys are optional; CLI flags always take precedence.
 
 ```toml
@@ -360,6 +372,37 @@ workforce config set default_model "claude-sonnet-4-5"
 ```
 
 Or edit `~/.workforce/config.toml` directly.
+
+### Per-project config (`.workforce.toml`)
+
+Drop a `.workforce.toml` file in your project root to set project-level defaults:
+
+```toml
+default_specialist = "aria"   # specialist to use when --specialist is omitted
+review = true                 # enable Reviewer loop by default
+auto_merge = false            # auto-merge completed branches by default
+max_turns = 60                # override global max_turns for this project
+max_cost  = 5.0               # override global max_cost for this project
+```
+
+All keys are optional. Precedence (highest to lowest):
+
+1. CLI flag (e.g. `--max-turns 80`)
+2. `~/.workforce/config.toml` (global defaults)
+3. `.workforce.toml` in the project root (per-project defaults)
+4. Built-in default
+
+### Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `WORKFORCE_HOME` | Override the default `~/.workforce` state directory |
+| `WORKFORCE_WEBHOOK_CONFIG` | Path to the webhook config file (default: `~/.workforce/webhook.toml`) |
+| `ANTHROPIC_API_KEY` | API key for Claude (required unless `claude` CLI is already authenticated) |
+
+### Project marker file
+
+When a project is registered, Workforce writes a `.workforce-project-id` file in the repo root containing the 12-hex project ID. This marker lets Workforce find the project record even if the repo is moved — the ID derived from the absolute path would change, but the marker file still resolves the correct record.
 
 ## Commit policy
 

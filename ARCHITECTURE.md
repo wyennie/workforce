@@ -34,7 +34,7 @@ the `claude` CLI binary. Every user-visible output goes through `output.py`
 
 ```
 ~/.workforce/                       # WORKFORCE_HOME; overridable via env var
-├── config.toml                     # (reserved; not yet used)
+├── config.toml                     # global defaults (default_model, max_turns, max_cost)
 ├── roster/
 │   └── <specialist-name>/
 │       ├── specialist.toml         # Specialist model (TOML)
@@ -91,14 +91,22 @@ project record.
 - `append_memory()` uses `fcntl.flock(LOCK_EX)` on Unix; the fcntl import is
   guarded with a try/except for Windows compatibility (`_fcntl = None` fallback)
 
-**Templates** — 5 built-in specialist templates:
+**Templates** — 11 built-in specialist templates:
 | Template | Role | Tools |
 |---|---|---|
 | `backend` | Senior backend engineer | Read, Write, Edit, Bash, Glob, Grep, WebFetch |
-| `frontend` | Senior frontend engineer | same |
+| `frontend` | Senior frontend engineer | Read, Write, Edit, Bash, Glob, Grep, WebFetch |
 | `tester` | Test engineer | Read, Write, Edit, Bash, Glob, Grep |
-| `reviewer` | Code reviewer (read-only) | Read, Bash, Glob, Grep |
-| `generalist` | Generalist engineer | same as backend |
+| `reviewer` | Code reviewer (read-only) ¹ | Read, Bash, Glob, Grep |
+| `generalist` | Generalist engineer | Read, Write, Edit, Bash, Glob, Grep, WebFetch |
+| `devops` | DevOps / infrastructure engineer | Read, Write, Edit, Bash, Glob, Grep, WebFetch |
+| `data` | Data engineer / analyst | Read, Write, Edit, Bash, Glob, Grep, WebFetch |
+| `docs` | Technical writer | Read, Write, Edit, Bash, Glob, Grep |
+| `security` | Security engineer (read-only) ¹ | Read, Bash, Glob, Grep |
+| `db` | Database engineer | Read, Write, Edit, Bash, Glob, Grep |
+| `mobile` | Mobile engineer | Read, Write, Edit, Bash, Glob, Grep, WebFetch |
+
+¹ `reviewer` and `security` are read-only templates: they have no Write or Edit tools.
 
 ---
 
@@ -429,7 +437,7 @@ cli/
 | `workforce show <name>` | Show specialist details + memory |
 | `workforce templates` | List built-in specialist templates |
 | `workforce refresh [name]` | Re-apply latest common preamble |
-| `workforce project init <path>` | Register a project |
+| `workforce init` | Scaffold and register a project in the current directory |
 | `workforce project list` | List registered projects |
 | `workforce project show <proj>` | Show project details |
 | `workforce project assign <proj> <spec>` | Assign specialist to project |
