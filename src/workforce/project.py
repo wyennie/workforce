@@ -18,10 +18,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
-try:
-    import tomllib
-except ImportError:  # pragma: no cover — Python < 3.11 fallback
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 from pathlib import Path
 from typing import Literal
 

@@ -22,13 +22,8 @@ Example ``webhook.toml``::
 from __future__ import annotations
 
 import os
-import sys
+import tomllib
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib  # type: ignore[no-redef]
 
 from pydantic import BaseModel
 

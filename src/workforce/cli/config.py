@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import sys
+import tomllib
 
 import typer
 from rich.table import Table
@@ -14,14 +14,6 @@ from rich.table import Table
 from workforce import output, paths
 from workforce.config import GlobalConfig, load_global_config
 from workforce.utils import _dump_toml
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib  # type: ignore[no-redef]
 
 sub = typer.Typer(
     name="config",
