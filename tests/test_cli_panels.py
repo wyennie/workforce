@@ -57,16 +57,16 @@ def _result(*, is_error: bool = False, cost: float = 0.10, turns: int = 3) -> Re
 # ----- _format_message ------------------------------------------------------
 
 
-def test_format_text_returns_lines_and_thinking_status() -> None:
+def test_format_text_returns_lines_and_writing_status() -> None:
     lines, status = _format_message(_assistant_text("hello\nworld"))
     assert lines == ["hello", "world"]
-    assert status == "thinking"
+    assert status == "writing"
 
 
 def test_format_tool_use_returns_arrow_line_and_tool_status() -> None:
     lines, status = _format_message(_assistant_tool_use("Bash", {"command": "ls"}))
     assert len(lines) == 1
-    assert lines[0].startswith("→ Bash(")
+    assert "→ Bash" in lines[0]
     assert status == "tool: Bash"
 
 
@@ -88,15 +88,16 @@ def test_format_result_error_marks_error_status() -> None:
     assert status == "error"
 
 
-def test_format_thinking_block_skipped() -> None:
+def test_format_thinking_block_shows_indicator() -> None:
     msg = AssistantMessage(
         content=[ThinkingBlock(thinking="internal", signature="")],
         model="m", parent_tool_use_id=None, error=None, usage=None,
         message_id="m", stop_reason=None, session_id="s", uuid=None,
     )
     lines, status = _format_message(msg)
-    assert lines == []
-    assert status is None
+    assert len(lines) == 1
+    assert "thinking" in lines[0]
+    assert status == "thinking"
 
 
 def test_format_system_message_skipped() -> None:

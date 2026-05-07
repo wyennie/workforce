@@ -27,6 +27,8 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from rich import box
+from rich.panel import Panel
 from rich.table import Table
 
 from workforce import (
@@ -69,9 +71,12 @@ from workforce.worktree import (
 from . import panels as panels_mod
 from ._completions import complete_project, complete_specialist
 from ._common import (
+    _PARALLEL_STATUS_BADGES,
     _PARALLEL_STATUS_STYLES,
+    _STATUS_BADGES,
     _STATUS_STYLES,
     _make_renderer,
+    _relative_time,
     _stores,
     _summarize_tool_args,
     _truncate,
@@ -757,11 +762,19 @@ def _dispatch_direct(
     pr_draft: bool = False,
 ) -> None:
     """Single specialist, no Manager. The --specialist X bypass."""
-    output.info(
-        f"[bold]dispatching[/bold] {spec.name} on {proj.name}: "
-        f"[italic]{_truncate(ticket, 80)}[/italic]  [dim](no manager)[/dim]"
+    ticket_preview = _truncate(ticket, 200)
+    meta_line = (
+        f"[dim]specialist:[/dim] [bold]{spec.name}[/bold]  "
+        f"[dim]project:[/dim] {proj.name}  "
+        f"[dim]turns≤{limits.max_turns}  cost≤${limits.max_budget_usd:.2f}[/dim]"
     )
-    output.rule()
+    output.raw(Panel(
+        f"[italic]{ticket_preview}[/italic]\n\n{meta_line}",
+        title="[bold cyan]⚡ dispatch[/bold cyan]  [dim](direct — no Manager)[/dim]",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
     try:
         meta = asyncio.run(
             mission.dispatch(
@@ -901,7 +914,14 @@ def _dispatch_detached(
         if startup_log_fh is not None:
             startup_log_fh.close()
 
-    output.success(f"dispatched mission {mission_id}")
+    output.raw(Panel(
+        f"[bold]{mission_id}[/bold]\n"
+        f"[dim]Watch it:[/dim]  [bold]workforce mission tail {mission_id}[/bold]",
+        title="[bold cyan]⚡ mission dispatched[/bold cyan]",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
 
     # Poll briefly for meta.json to confirm the child started correctly.
     # If it never appears but startup.log has content, warn the user immediately
@@ -973,11 +993,19 @@ def _dispatch_with_manager(
             "can hire from templates as needed."
         )
 
-    output.info(
-        f"[bold]dispatching[/bold] on {proj.name}: "
-        f"[italic]{_truncate(ticket, 80)}[/italic]"
+    ticket_preview = _truncate(ticket, 200)
+    meta_line = (
+        f"[dim]Manager → auto-assign  "
+        f"project:[/dim] {proj.name}  "
+        f"[dim]turns≤{limits.max_turns}  cost≤${limits.max_budget_usd:.2f}[/dim]"
     )
-    output.info("[dim]Manager planning...[/dim]")
+    output.raw(Panel(
+        f"[italic]{ticket_preview}[/italic]\n\n{meta_line}",
+        title="[bold cyan]⚡ dispatch[/bold cyan]  [dim](Manager planning...)[/dim]",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
 
     # Run the Manager.
     specs_info = parallel._build_specialist_info(proj, roster_store, project_store)
@@ -1510,76 +1538,133 @@ def _maybe_create_pr(
 
 def _print_parallel_summary(parent: ParallelMissionMeta, subs: list[MissionMeta]) -> None:
     """Print the per-task status table and total cost for a parallel mission."""
-    output.info(
-        f"parent mission {parent.parent_mission_id}: "
-        f"{_PARALLEL_STATUS_STYLES[parent.status]}"
-    )
-    output.info(f"  manager cost: ${parent.manager_cost_usd:.4f}")
-    if not subs:
-        return
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("task")
-    table.add_column("specialist")
-    table.add_column("status")
-    table.add_column("cost", justify="right")
-    table.add_column("turns", justify="right")
-    table.add_column("commits", justify="right")
-    table.add_column("branch", overflow="fold")
+    status_border = {
+        ParallelStatus.COMPLETED: "green",
+        ParallelStatus.FAILED: "red",
+        ParallelStatus.PARTIAL: "yellow",
+    }.get(parent.status, "dim")
 
-    sub_by_id = {m.mission_id: m for m in subs}
-    total_cost = parent.manager_cost_usd
-    for ref in parent.sub_missions:
-        m = sub_by_id.get(ref.mission_id)
-        if m is None:
-            continue
-        total_cost += m.cost_usd
-        table.add_row(
-            ref.task_id,
-            m.specialist,
-            _STATUS_STYLES[m.status],
-            f"${m.cost_usd:.4f}",
-            str(m.turn_count),
-            str(len(m.commits)),
-            m.branch,
-        )
-    output.print_table(table)
-    output.info(f"  total cost: ${total_cost:.4f}")
+    # Summary grid
+    summary_grid = Table.grid(padding=(0, 2))
+    summary_grid.add_column(style="bold dim")
+    summary_grid.add_column()
+    summary_grid.add_row(
+        "status",
+        _PARALLEL_STATUS_BADGES.get(parent.status, _PARALLEL_STATUS_STYLES[parent.status]),
+    )
+    summary_grid.add_row("manager cost", f"${parent.manager_cost_usd:.4f}")
+
+    if subs:
+        table = Table(show_header=True, header_style="bold dim", box=box.SIMPLE)
+        table.add_column("task")
+        table.add_column("specialist")
+        table.add_column("status")
+        table.add_column("cost", justify="right")
+        table.add_column("turns", justify="right")
+        table.add_column("commits", justify="right")
+        table.add_column("branch", overflow="fold")
+
+        sub_by_id = {m.mission_id: m for m in subs}
+        total_cost = parent.manager_cost_usd
+        for ref in parent.sub_missions:
+            m = sub_by_id.get(ref.mission_id)
+            if m is None:
+                continue
+            sub_cost = m.cost_usd + m.review_cost_usd
+            total_cost += sub_cost
+            table.add_row(
+                ref.task_id,
+                m.specialist,
+                _STATUS_STYLES[m.status],
+                f"${sub_cost:.4f}",
+                str(m.turn_count),
+                str(len(m.commits)),
+                m.branch,
+            )
+        summary_grid.add_row("total cost", f"${total_cost:.4f}")
+
+        output.raw(Panel(
+            summary_grid,
+            title=f"[bold]{parent.parent_mission_id}[/bold]",
+            title_align="left",
+            border_style=status_border,
+            padding=(0, 1),
+        ))
+        output.raw(Panel(
+            table,
+            title="[bold]sub-missions[/bold]",
+            title_align="left",
+            border_style="dim",
+            padding=(0, 0),
+        ))
+    else:
+        output.raw(Panel(
+            summary_grid,
+            title=f"[bold]{parent.parent_mission_id}[/bold]",
+            title_align="left",
+            border_style=status_border,
+            padding=(0, 1),
+        ))
 
 
 def _print_summary(meta: mission.MissionMeta) -> None:
     """Print a single-mission status block (branch, cost, turns, review verdict)."""
-    output.info(f"mission {meta.mission_id}: {_STATUS_STYLES[meta.status]}")
+    status_border = {
+        MissionStatus.COMPLETED: "green",
+        MissionStatus.ERROR: "red",
+        MissionStatus.REVIEW_REJECTED: "red",
+        MissionStatus.WALL_TIMEOUT: "yellow",
+        MissionStatus.INTERRUPTED: "yellow",
+    }.get(meta.status, "dim")
+
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold dim")
+    grid.add_column()
+    grid.add_row("status", _STATUS_BADGES.get(meta.status, _STATUS_STYLES[meta.status]))
     if meta.branch is None:
-        # Workspace mission — no branch, no commits, just a working dir.
-        output.info(f"  workspace: {meta.worktree_path}")
+        grid.add_row("workspace", meta.worktree_path or "[dim](unknown)[/dim]")
     else:
-        output.info(f"  branch:    {meta.branch}")
-        output.info(f"  worktree:  {meta.worktree_path}")
-    output.info(f"  duration:  {meta.duration_seconds:.1f}s")
-    output.info(f"  cost:      ${meta.cost_usd:.4f}")
-    output.info(f"  turns:     {meta.turn_count}")
+        grid.add_row("branch", meta.branch)
+    dur = meta.duration_seconds
+    if dur >= 60:
+        grid.add_row("duration", f"{int(dur) // 60}m {int(dur) % 60}s")
+    else:
+        grid.add_row("duration", f"{dur:.0f}s")
+    grid.add_row("cost", f"${meta.cost_usd:.4f}")
+    grid.add_row("turns", str(meta.turn_count))
     if meta.branch is not None:
-        output.info(f"  commits:   {len(meta.commits)}")
-        if meta.commits and len(meta.commits) < 2:
-            output.warn(
-                "  only one commit — check if the specialist is committing as it goes"
-            )
+        grid.add_row("commits", str(len(meta.commits)))
+
     if meta.reviews:
         approved = meta.reviews[-1].approved
-        verdict = "approved" if approved else "rejected"
-        verdict_color = "green" if approved else "red"
-        output.info(
-            f"  review:    [{verdict_color}]{verdict}[/{verdict_color}] "
-            f"after {len(meta.reviews)} round(s), revisions={meta.revision_rounds}, "
-            f"review_cost=${meta.review_cost_usd:.4f}"
+        verdict = "[green]approved[/green]" if approved else "[red]rejected[/red]"
+        grid.add_row(
+            "review",
+            f"{verdict}  [dim]{len(meta.reviews)} round(s)  "
+            f"review_cost=${meta.review_cost_usd:.4f}[/dim]",
         )
         if not approved and meta.reviews[-1].issues:
-            for issue in meta.reviews[-1].issues[:5]:
-                output.warn(f"    • {issue}")
+            issues_text = "\n".join(f"• {i}" for i in meta.reviews[-1].issues[:5])
+            grid.add_row("issues", f"[red]{issues_text}[/red]")
+
     if meta.error_detail:
-        output.fail(f"  detail:    {meta.error_detail}")
+        grid.add_row("error", f"[red]{meta.error_detail}[/red]")
+
     if meta.memory_delta_captured:
-        output.info("  memory delta captured")
-    output.info(
-        f"  artifacts: {paths.project_dir(meta.project_id) / 'missions' / meta.mission_id}"
-    )
+        grid.add_row("memory", "delta captured")
+
+    artifacts_path = paths.project_dir(meta.project_id) / "missions" / meta.mission_id
+    grid.add_row("artifacts", str(artifacts_path))
+
+    output.raw(Panel(
+        grid,
+        title=f"[bold]{meta.mission_id}[/bold]",
+        title_align="left",
+        border_style=status_border,
+        padding=(0, 1),
+    ))
+
+    if meta.branch is not None and meta.commits and len(meta.commits) < 2:
+        output.warn(
+            "only one commit — check if the specialist is committing as it goes"
+        )

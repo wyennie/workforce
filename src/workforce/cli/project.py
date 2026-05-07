@@ -521,14 +521,19 @@ def project_tail(
     )
     output.rule()
 
-    # Per-mission read positions and labels.
+    # Per-mission read positions, labels, and colors.
     positions: dict[str, int] = {}
     labels: dict[str, str] = {}
+    colors: dict[str, str] = {}
     # Track missions that have emitted a ResultMessage.
     finished_missions: set[str] = set()
     # Timestamp when all current missions first appeared to have finished.
     all_done_since: float | None = None
     start_time = time.time() if all_done_timeout > 0 else None
+
+    # Color palette for distinguishing parallel mission streams.
+    _LABEL_PALETTE = ["cyan", "green", "magenta", "yellow", "blue"]
+    _color_index = 0
 
     def label_for(mid: str) -> str:
         short = mid[-8:] if len(mid) > 8 else mid
@@ -554,15 +559,23 @@ def project_tail(
                     if mid not in positions:
                         positions[mid] = 0
                         labels[mid] = label_for(mid)
+                        colors[mid] = _LABEL_PALETTE[_color_index % len(_LABEL_PALETTE)]
+                        _color_index += 1
                         # A new mission reset the all-done clock.
                         all_done_since = None
+                        color = colors[mid]
                         output.info(
-                            f"[bold cyan]+ attached: {labels[mid]}[/bold cyan]"
+                            f"[bold {color}]+ attached: {labels[mid]}[/bold {color}]"
                         )
                     elif labels[mid].endswith("/…"):
                         new_label = label_for(mid)
                         if not new_label.endswith("/…"):
+                            old_label = labels[mid]
                             labels[mid] = new_label
+                            color = colors.get(mid, "cyan")
+                            output.info(
+                                f"[bold {color}]  ↳ {old_label} → {new_label}[/bold {color}]"
+                            )
 
             # Read new events from each attached mission.
             for mid in list(positions.keys()):
@@ -581,7 +594,10 @@ def project_tail(
                             except json.JSONDecodeError:
                                 continue
                             render_labeled_event(
-                                labels[mid], evt, show_thinking=show_thinking
+                                labels[mid],
+                                evt,
+                                show_thinking=show_thinking,
+                                label_color=colors.get(mid, "cyan"),
                             )
                             if evt.get("_type") == "ResultMessage":
                                 finished_missions.add(mid)

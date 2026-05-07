@@ -33,9 +33,9 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from workforce.cli._common import _summarize_tool_args, _truncate
+from workforce.cli._common import _summarize_tool_args, _tool_color, _truncate
 
-_DEFAULT_LINES_PER_PANEL = 10
+_DEFAULT_LINES_PER_PANEL = 15
 
 
 def _format_message(msg: Any) -> tuple[list[str], str | None]:
@@ -48,13 +48,15 @@ def _format_message(msg: Any) -> tuple[list[str], str | None]:
                 text = block.text.strip()
                 if text:
                     lines.extend(text.splitlines())
-                    new_status = "thinking"
+                    new_status = "writing"
             elif isinstance(block, ToolUseBlock):
-                args = _truncate(_summarize_tool_args(block.name, block.input), 80)
-                lines.append(f"→ {block.name}({args})")
+                args = _truncate(_summarize_tool_args(block.name, block.input), 60)
+                color = _tool_color(block.name)
+                lines.append(f"[{color}]→ {block.name}[/{color}][dim]  {args}[/dim]")
                 new_status = f"tool: {block.name}"
             elif isinstance(block, ThinkingBlock):
-                pass  # too noisy in compact panels
+                lines.append("[dim]  ⟨ thinking ⟩[/dim]")
+                new_status = "thinking"
         return lines, new_status
     if isinstance(msg, UserMessage):
         if isinstance(msg.content, list):
@@ -190,14 +192,28 @@ class PanelDisplay:
         for tid in self.task_ids:
             body = "\n".join(self.buffers[tid]) if self.buffers[tid] else "[dim](waiting)[/dim]"
             status = self.statuses[tid]
+            status_prefix = status.split(":", 1)[0]
             status_color = {
                 "done": "green",
                 "error": "red",
                 "starting": "dim",
-                "thinking": "cyan",
-            }.get(status.split(":", 1)[0], "yellow")
+                "thinking": "blue",
+                "writing": "cyan",
+            }.get(status_prefix, "yellow")
+            border_style = {
+                "done": "green",
+                "error": "red",
+                "starting": "dim",
+                "thinking": "blue",
+                "writing": "cyan",
+            }.get(status_prefix, "yellow")
             title = f"[bold]{tid}[/bold] [{status_color}]({status})[/{status_color}]"
-            panels.append(Panel(Text.from_markup(body), title=title, title_align="left"))
+            panels.append(Panel(
+                Text.from_markup(body),
+                title=title,
+                title_align="left",
+                border_style=border_style,
+            ))
         return Group(*panels)
 
 

@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import typer
+from rich import box
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
@@ -25,13 +28,17 @@ from workforce.worktree import WorktreeManager
 
 from ._completions import complete_mission_id
 from ._common import (
+    _PARALLEL_STATUS_BADGES,
     _PARALLEL_STATUS_STYLES,
+    _STATUS_BADGES,
     _STATUS_STYLES,
     _find_mission,
     _find_mission_dir,
     _list_project_missions,
     _load_any_meta,
+    _relative_time,
     _summarize_tool_args,
+    _tool_color,
     _truncate,
 )
 
@@ -49,43 +56,85 @@ def missions_command(
 
     missions = _list_project_missions(proj.id)
     if not missions:
-        output.info(f"no missions recorded for {proj.name}")
+        output.raw(Panel(
+            f"[dim]No missions yet.\n\nRun [bold]workforce dispatch[/bold] to start one.[/dim]",
+            title=f"[bold]{proj.name}[/bold]",
+            title_align="left",
+            border_style="dim",
+            padding=(1, 2),
+        ))
         return
 
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("mission id")
-    table.add_column("kind")
-    table.add_column("when")
-    table.add_column("specialist / tasks", overflow="fold")
-    table.add_column("status")
-    table.add_column("cost", justify="right")
+    # Compute total cost across all missions for the summary header.
+    total_cost = 0.0
+    for m in missions:
+        if isinstance(m, ParallelMissionMeta):
+            total_cost += m.manager_cost_usd
+            for ref in m.sub_missions:
+                sub = _load_any_meta(proj.id, ref.mission_id)
+                if isinstance(sub, MissionMeta):
+                    total_cost += sub.cost_usd + sub.review_cost_usd
+        else:
+            total_cost += m.cost_usd + m.review_cost_usd
+
+    n = len(missions)
+    output.info(
+        f"[bold]{proj.name}[/bold]  "
+        f"[dim]{n} mission{'s' if n != 1 else ''} · ${total_cost:.2f} total[/dim]"
+    )
+
+    table = Table(
+        show_header=True,
+        header_style="bold dim",
+        box=box.SIMPLE_HEAD,
+        show_edge=False,
+        padding=(0, 1),
+    )
+    table.add_column("id", style="dim", no_wrap=True)
+    table.add_column("specialist", no_wrap=True)
+    table.add_column("when", style="dim", no_wrap=True)
+    table.add_column("status", no_wrap=True)
+    table.add_column("cost", justify="right", style="dim", no_wrap=True)
     table.add_column("ticket", overflow="fold")
+
+    def _fmt_cost(c: float) -> str:
+        return f"${c:.4f}" if c < 0.01 else f"${c:.2f}"
 
     for m in reversed(missions):  # newest first
         if isinstance(m, ParallelMissionMeta):
-            tasks = ", ".join(s.task_id for s in m.sub_missions) or "(none)"
+            # Compute real total cost: manager + all sub-missions.
+            real_cost = m.manager_cost_usd
+            specialist_names: list[str] = []
+            for ref in m.sub_missions:
+                sub = _load_any_meta(proj.id, ref.mission_id)
+                if isinstance(sub, MissionMeta):
+                    real_cost += sub.cost_usd + sub.review_cost_usd
+                    if sub.specialist not in specialist_names:
+                        specialist_names.append(sub.specialist)
+            spec_display = " · ".join(specialist_names) if specialist_names else "[dim](pending)[/dim]"
             table.add_row(
                 m.parent_mission_id,
-                f"[bold]{m.decomposition_kind.value}[/bold]",
-                m.started_at,
-                f"[dim]{tasks}[/dim]",
+                spec_display,
+                _relative_time(m.started_at),
                 _PARALLEL_STATUS_STYLES[m.status],
-                f"${m.manager_cost_usd:.4f}",
+                _fmt_cost(real_cost),
                 _truncate(m.ticket, 60),
             )
         else:
-            kind = "sub" if "__" in m.mission_id else "single"
+            is_sub = "__" in m.mission_id
             # Indent sub-mission ids visually so their relationship to the
             # parent (one row above, usually) is obvious.
-            label = f"  ↳ {m.mission_id}" if kind == "sub" else m.mission_id
+            label = f"  ↳ {m.mission_id}" if is_sub else m.mission_id
+            total_mission_cost = m.cost_usd + m.review_cost_usd
+            row_style = "dim" if is_sub else ""
             table.add_row(
                 label,
-                f"[dim]{kind}[/dim]",
-                m.started_at,
                 m.specialist,
+                _relative_time(m.started_at),
                 _STATUS_STYLES[m.status],
-                f"${m.cost_usd:.4f}",
+                _fmt_cost(total_mission_cost),
                 _truncate(m.ticket, 60),
+                style=row_style,
             )
     output.print_table(table)
 
@@ -139,7 +188,13 @@ def replay_command(
             _render_replay_event(evt, show_thinking=show_thinking)
 
 
-def render_labeled_event(label: str, evt: dict[str, Any], *, show_thinking: bool) -> None:
+def render_labeled_event(
+    label: str,
+    evt: dict[str, Any],
+    *,
+    show_thinking: bool,
+    label_color: str = "cyan",
+) -> None:
     """Render one event line with a per-mission prefix, for the project-tail
     multi-mission stream. Public (no leading underscore) so cli_project can
     import it without crossing private boundaries.
@@ -149,7 +204,7 @@ def render_labeled_event(label: str, evt: dict[str, Any], *, show_thinking: bool
     and tool-result echoes; only assistant text, tool calls, and result
     summaries survive.
     """
-    prefix = f"[bold cyan][{label}][/bold cyan]"
+    prefix = f"[bold {label_color}][{label}][/bold {label_color}]"
     t = evt.get("_type")
     if t == "AssistantMessage":
         for block in evt.get("content") or []:
@@ -159,13 +214,20 @@ def render_labeled_event(label: str, evt: dict[str, Any], *, show_thinking: bool
                 text = (block["text"] or "").rstrip()
                 if text:
                     output.info(f"{prefix} {text}")
-            elif "thinking" in block and show_thinking:
-                output.info(
-                    f"{prefix} [dim italic]thinking: {block['thinking']!r}[/dim italic]"
-                )
+            elif "thinking" in block:
+                if show_thinking:
+                    output.info(
+                        f"{prefix} [dim italic]thinking: {block['thinking']!r}[/dim italic]"
+                    )
+                else:
+                    output.info(f"{prefix} [dim]  ⟨ thinking ⟩[/dim]")
             elif "name" in block and "input" in block:
                 args = _summarize_tool_args(block["name"], block.get("input") or {})
-                output.info(f"{prefix} [dim]→ {block['name']}({_truncate(args, 80)})[/dim]")
+                color = _tool_color(block["name"])
+                output.info(
+                    f"{prefix}  [{color}]→ {block['name']}[/{color}]"
+                    f"[dim]  {_truncate(args, 80)}[/dim]"
+                )
     elif t == "UserMessage":
         # Surface tool errors only; successful tool results would drown the stream.
         content = evt.get("content")
@@ -176,16 +238,30 @@ def render_labeled_event(label: str, evt: dict[str, Any], *, show_thinking: bool
                     output.warn(f"{prefix} ← tool error: {preview}")
     elif t == "ResultMessage":
         cost = evt.get("total_cost_usd") or 0.0
+        is_error = evt.get("is_error", False)
+        status_color = "red" if is_error else "green"
+        symbol = "✗" if is_error else "✓"
         output.info(
-            f"{prefix} [dim]turns={evt.get('num_turns')} "
-            f"cost=${cost:.4f} (mission ended)[/dim]"
+            f"{prefix} [{status_color}]{symbol}[/{status_color}] mission ended  "
+            f"[dim]turns={evt.get('num_turns')}  "
+            f"duration={evt.get('duration_ms', 0) // 1000:.0f}s  "
+            f"cost=${cost:.4f}[/dim]"
         )
 
 
-def _render_replay_event(evt: dict[str, Any], *, show_thinking: bool) -> None:
+def _render_replay_event(
+    evt: dict[str, Any],
+    *,
+    show_thinking: bool,
+    _elapsed: "Callable[[], str] | None" = None,
+) -> None:
     """Render a single deserialized event line to the terminal during replay."""
     t = evt.get("_type")
     if t == "AssistantMessage":
+        # Emit a turn separator before each assistant turn.
+        elapsed_str = _elapsed() if _elapsed is not None else ""
+        sep = f"[dim]─── {elapsed_str} ──[/dim]" if elapsed_str else "[dim]───[/dim]"
+        output.info(sep)
         for block in evt.get("content") or []:
             if isinstance(block, dict):
                 if "text" in block:
@@ -194,23 +270,47 @@ def _render_replay_event(evt: dict[str, Any], *, show_thinking: bool) -> None:
                         output.info(text)
                 elif "thinking" in block:
                     if show_thinking:
-                        output.info(f"[dim italic]thinking: {block['thinking']!r}[/dim italic]")
+                        output.raw(Panel(
+                            block["thinking"].strip() if block.get("thinking") else "",
+                            title="[dim]thinking[/dim]",
+                            title_align="left",
+                            border_style="dim",
+                            padding=(0, 1),
+                        ))
+                    else:
+                        output.info("[dim]  ⟨ thinking ⟩[/dim]")
                 elif "name" in block and "input" in block:
                     args = _summarize_tool_args(block["name"], block.get("input") or {})
-                    output.info(f"[dim]→ {block['name']}({_truncate(args, 80)})[/dim]")
+                    color = _tool_color(block["name"])
+                    output.info(
+                        f"  [{color}]→ {block['name']}[/{color}]"
+                        f"[dim]  {_truncate(args, 80)}[/dim]"
+                    )
     elif t == "UserMessage":
         content = evt.get("content")
         if isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("is_error"):
                     preview = _truncate(repr(block.get("content")), 120)
-                    output.warn(f"  ← tool error: {preview}")
+                    output.raw(Panel(
+                        f"[red]{preview}[/red]",
+                        title="[red]✗ tool error[/red]",
+                        title_align="left",
+                        border_style="red",
+                        padding=(0, 1),
+                    ))
     elif t == "ResultMessage":
         cost = evt.get("total_cost_usd") or 0.0
+        is_error = evt.get("is_error", False)
+        status_color = "red" if is_error else "green"
+        symbol = "✗" if is_error else "✓"
         output.info(
-            f"[dim]turns={evt.get('num_turns')} duration={evt.get('duration_ms')}ms "
+            f"[{status_color}]{symbol}[/{status_color}] mission ended  "
+            f"[dim]turns={evt.get('num_turns')}  "
+            f"duration={evt.get('duration_ms', 0) // 1000:.0f}s  "
             f"cost=${cost:.4f}[/dim]"
         )
+        output.rule()
     elif t == "SystemMessage":
         if evt.get("subtype") != "init":
             output.info(f"[dim][system:{evt.get('subtype')}][/dim]")
@@ -231,77 +331,174 @@ def mission_show(mission_id: str = typer.Argument(..., help="Mission id.", autoc
 
 def _show_single_meta(proj: project_mod.Project, meta: MissionMeta) -> None:
     """Render the detail view for a single (non-parallel) mission."""
+    from workforce.mission import MissionStatus
+
     mp = mission.mission_paths(proj.id, meta.mission_id)
+
+    border_color = {
+        MissionStatus.COMPLETED: "green",
+        MissionStatus.ERROR: "red",
+        MissionStatus.REVIEW_REJECTED: "red",
+        MissionStatus.WALL_TIMEOUT: "yellow",
+        MissionStatus.INTERRUPTED: "yellow",
+    }.get(meta.status, "dim")
+
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold")
+    grid.add_column(style="bold dim")
     grid.add_column()
-    grid.add_row("project", f"{proj.name} ({proj.id})")
-    grid.add_row("specialist", f"{meta.specialist} ({meta.model})")
-    grid.add_row("status", _STATUS_STYLES[meta.status])
-    grid.add_row("started", meta.started_at)
-    grid.add_row("ended", meta.ended_at)
-    grid.add_row("duration", f"{meta.duration_seconds:.1f}s")
-    grid.add_row("cost", f"${meta.cost_usd:.4f}")
+    grid.add_row("project", f"{proj.name}  [dim]({proj.id})[/dim]")
+    grid.add_row("specialist", f"{meta.specialist}  [dim]({meta.model})[/dim]")
+    grid.add_row("status", _STATUS_BADGES.get(meta.status, _STATUS_STYLES[meta.status]))
+    grid.add_row("started", _relative_time(meta.started_at))
+    # Human-friendly duration formatting.
+    dur = meta.duration_seconds
+    if dur >= 60:
+        grid.add_row("duration", f"{int(dur) // 60}m {int(dur) % 60}s")
+    else:
+        grid.add_row("duration", f"{dur:.0f}s")
+    total_cost = meta.cost_usd + meta.review_cost_usd
+    grid.add_row(
+        "cost",
+        f"${total_cost:.4f}  "
+        f"[dim](specialist ${meta.cost_usd:.4f}"
+        + (f"  review ${meta.review_cost_usd:.4f}" if meta.review_cost_usd else "")
+        + "[/dim])",
+    )
     grid.add_row("turns", str(meta.turn_count))
     if meta.branch is None:
         grid.add_row("workspace", meta.worktree_path or "(unknown)")
     else:
         grid.add_row("branch", meta.branch)
-        grid.add_row("worktree", meta.worktree_path or "(unknown)")
+        grid.add_row("worktree", meta.worktree_path or "(removed)")
         grid.add_row("commits", str(len(meta.commits)))
     if meta.error_detail:
-        grid.add_row("error", meta.error_detail)
+        grid.add_row("error", f"[red]{meta.error_detail}[/red]")
 
-    output.raw(Panel(grid, title=f"mission {meta.mission_id}", title_align="left"))
+    output.raw(Panel(
+        grid,
+        title=f"[bold]mission[/bold] [dim]{meta.mission_id}[/dim]",
+        title_align="left",
+        border_style=border_color,
+        padding=(0, 1),
+    ))
+
+    # Review verdict panel (when applicable).
+    if meta.reviews:
+        last = meta.reviews[-1]
+        verdict = (
+            "[bold green]✓ approved[/bold green]"
+            if last.approved
+            else "[bold red]✗ rejected[/bold red]"
+        )
+        review_grid = Table.grid(padding=(0, 2))
+        review_grid.add_column(style="bold dim")
+        review_grid.add_column()
+        review_grid.add_row("verdict", verdict)
+        review_grid.add_row("rounds", str(len(meta.reviews)))
+        review_grid.add_row("revisions", str(meta.revision_rounds))
+        review_grid.add_row("cost", f"${meta.review_cost_usd:.4f}")
+        if not last.approved and last.issues:
+            bullets = "\n".join(f"• {i}" for i in last.issues[:5])
+            review_grid.add_row("issues", f"[red]{bullets}[/red]")
+        review_border = "green" if last.approved else "red"
+        output.raw(Panel(
+            review_grid,
+            title="[bold]review[/bold]",
+            title_align="left",
+            border_style=review_border,
+            padding=(0, 1),
+        ))
 
     if mp.ticket.is_file():
-        output.raw(Panel(mp.ticket.read_text().rstrip(), title="ticket", title_align="left"))
+        output.raw(Panel(
+            Markdown(mp.ticket.read_text().rstrip()),
+            title="[bold]ticket[/bold]",
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
+        ))
     if mp.result.is_file():
-        output.raw(Panel(mp.result.read_text().rstrip(), title="result", title_align="left"))
+        output.raw(Panel(
+            Markdown(mp.result.read_text().rstrip()),
+            title="[bold]result[/bold]",
+            title_align="left",
+            border_style="blue",
+            padding=(0, 1),
+        ))
 
     if meta.commits:
-        ctable = Table(show_header=True, header_style="bold")
-        ctable.add_column("sha")
+        ctable = Table(show_header=True, header_style="bold dim", box=box.SIMPLE)
+        ctable.add_column("sha", style="dim", width=9)
         ctable.add_column("subject", overflow="fold")
         for c in meta.commits:
             ctable.add_row(c.sha[:8], c.subject)
-        output.print_table(ctable)
+        output.raw(Panel(
+            ctable,
+            title="[bold]commits[/bold]",
+            title_align="left",
+            border_style="dim",
+            padding=(0, 0),
+        ))
 
 
 def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) -> None:
     """Render a parent (parallel) mission with its sub-mission roll-up."""
+    from workforce.parallel import ParallelStatus
+
     mp = mission.mission_paths(proj.id, parent.parent_mission_id)
+
+    border_color = {
+        ParallelStatus.COMPLETED: "green",
+        ParallelStatus.FAILED: "red",
+        ParallelStatus.PARTIAL: "yellow",
+        ParallelStatus.DISPATCHED: "yellow",
+    }.get(parent.status, "dim")
+
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="bold")
+    grid.add_column(style="bold dim")
     grid.add_column()
-    grid.add_row("project", f"{proj.name} ({proj.id})")
+    grid.add_row("project", f"{proj.name}  [dim]({proj.id})[/dim]")
     grid.add_row("kind", parent.decomposition_kind.value)
-    grid.add_row("status", _PARALLEL_STATUS_STYLES[parent.status])
-    grid.add_row("started", parent.started_at)
-    grid.add_row("ended", parent.ended_at or "(in progress / crashed)")
-    grid.add_row("manager cost", f"${parent.manager_cost_usd:.4f}")
+    grid.add_row("status", _PARALLEL_STATUS_BADGES.get(parent.status, _PARALLEL_STATUS_STYLES[parent.status]))
+    grid.add_row("started", _relative_time(parent.started_at))
+    grid.add_row("ended", _relative_time(parent.ended_at) if parent.ended_at else "[dim](in progress)[/dim]")
     grid.add_row("sub-missions", str(len(parent.sub_missions)))
     if parent.merge_order:
         grid.add_row("merge order", " → ".join(parent.merge_order))
 
-    output.raw(Panel(grid, title=f"parent mission {parent.parent_mission_id}", title_align="left"))
+    output.raw(Panel(
+        grid,
+        title=f"[bold]parent mission[/bold] [dim]{parent.parent_mission_id}[/dim]",
+        title_align="left",
+        border_style=border_color,
+        padding=(0, 1),
+    ))
 
     if mp.ticket.is_file():
-        output.raw(Panel(mp.ticket.read_text().rstrip(), title="ticket", title_align="left"))
+        output.raw(Panel(
+            Markdown(mp.ticket.read_text().rstrip()),
+            title="[bold]ticket[/bold]",
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
+        ))
 
     decomp_path = mp.root / "decomposition.json"
     contract_path = mp.root / "contract" / "contract.md"
     if contract_path.is_file():
         output.raw(Panel(
-            contract_path.read_text().rstrip(),
-            title="contract", title_align="left",
+            Markdown(contract_path.read_text().rstrip()),
+            title="[bold]contract[/bold]",
+            title_align="left",
+            border_style="dim",
+            padding=(0, 1),
         ))
     if decomp_path.is_file():
         output.info(f"[dim]decomposition.json: {decomp_path}[/dim]")
 
     # Roll up sub-missions
     if parent.sub_missions:
-        stable = Table(show_header=True, header_style="bold")
+        stable = Table(show_header=True, header_style="bold dim", box=box.SIMPLE)
         stable.add_column("task")
         stable.add_column("specialist")
         stable.add_column("mission id", overflow="fold")
@@ -313,11 +510,11 @@ def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) ->
         for ref in parent.sub_missions:
             sub = _load_any_meta(proj.id, ref.mission_id)
             if isinstance(sub, MissionMeta):
-                total_cost += sub.cost_usd
+                total_cost += sub.cost_usd + sub.review_cost_usd
                 stable.add_row(
                     ref.task_id, sub.specialist, ref.mission_id,
                     _STATUS_STYLES[sub.status],
-                    f"${sub.cost_usd:.4f}",
+                    f"${sub.cost_usd + sub.review_cost_usd:.4f}",
                     str(sub.turn_count),
                     str(len(sub.commits)),
                 )
@@ -326,12 +523,17 @@ def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) ->
                     ref.task_id, ref.specialist, ref.mission_id,
                     "[red]missing meta[/red]", "—", "—", "—",
                 )
-        output.print_table(stable)
-        output.info(f"  total cost (manager + subs): ${total_cost:.4f}")
+        output.raw(Panel(
+            stable,
+            title=f"[bold]sub-missions[/bold]  [dim]manager ${parent.manager_cost_usd:.4f}  total ${total_cost:.4f}[/dim]",
+            title_align="left",
+            border_style="dim",
+            padding=(0, 0),
+        ))
 
     drifters = [(s.task_id, s.out_of_lane_files) for s in parent.sub_missions if s.out_of_lane_files]
     if drifters:
-        atable = Table(show_header=True, header_style="bold")
+        atable = Table(show_header=True, header_style="bold dim", box=box.SIMPLE)
         atable.add_column("task")
         atable.add_column("files written outside owns_paths", overflow="fold")
         for task_id, files in drifters:
@@ -340,6 +542,8 @@ def _show_parent_meta(proj: project_mod.Project, parent: ParallelMissionMeta) ->
             atable,
             title="[red]decomposition drift[/red]",
             title_align="left",
+            border_style="red",
+            padding=(0, 0),
         ))
 
 
@@ -407,16 +611,32 @@ def mission_tail(
         label = "(running)"
     else:
         label = f"({meta.decomposition_kind.value} parent)"
-    output.info(
-        f"[bold]tailing {mission_id}[/bold] — {proj.name} / {label}  "
-        f"[dim]({mp.events})[/dim]"
-    )
-    output.rule()
 
-    import time
+    # Render a structured header panel instead of a plain info line.
+    header = Table.grid(padding=(0, 3))
+    header.add_column(style="bold dim")
+    header.add_column()
+    header.add_row("mission", mission_id)
+    header.add_row("specialist", label)
+    header.add_row("project", proj.name)
+    output.raw(Panel(
+        header,
+        title="[bold cyan]● live tail[/bold cyan]",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
+
+    import time as _time
+    _tail_start = _time.monotonic()
+
+    def _elapsed() -> str:
+        s = int(_time.monotonic() - _tail_start)
+        return f"{s // 60:02d}:{s % 60:02d}"
+
     pos = 0
     result_seen = False
-    start_time = time.time() if timeout > 0 else None
+    start_time = _time.time() if timeout > 0 else None
     try:
         while True:
             try:
@@ -430,7 +650,9 @@ def mission_tail(
                             evt = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        _render_replay_event(evt, show_thinking=show_thinking)
+                        _render_replay_event(
+                            evt, show_thinking=show_thinking, _elapsed=_elapsed
+                        )
                         if evt.get("_type") == "ResultMessage":
                             result_seen = True
                     pos = f.tell()
@@ -442,15 +664,14 @@ def mission_tail(
             # Sleep one extra poll cycle to catch any trailing events written
             # in the same batch (e.g. memory-delta call), then exit cleanly.
             if result_seen:
-                time.sleep(poll_seconds)
-                output.info("[dim](mission ended)[/dim]")
+                _time.sleep(poll_seconds)
                 return
             # Timeout guard: exit with an error if the mission takes too long.
-            if start_time is not None and time.time() - start_time > timeout:
+            if start_time is not None and _time.time() - start_time > timeout:
                 output.die(
                     f"timeout: mission {mission_id!r} did not finish within {timeout:.0f}s"
                 )
-            time.sleep(poll_seconds)
+            _time.sleep(poll_seconds)
     except KeyboardInterrupt:
         output.info("[dim](stopped)[/dim]")
 

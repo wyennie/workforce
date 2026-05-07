@@ -7,6 +7,7 @@ can pull from one place without circular imports.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from claude_agent_sdk import (
@@ -137,6 +138,68 @@ _PARALLEL_STATUS_STYLES = {
     ParallelStatus.FAILED: "[red]failed[/red]",
     ParallelStatus.CANCELLED: "[dim]cancelled[/dim]",
 }
+
+# Pill-style badge labels for use in detail views (mission show, post-dispatch).
+_STATUS_BADGES: dict[MissionStatus, str] = {
+    MissionStatus.COMPLETED: "[bold white on green] DONE [/bold white on green]",
+    MissionStatus.ERROR: "[bold white on red] ERROR [/bold white on red]",
+    MissionStatus.WALL_TIMEOUT: "[bold black on yellow] TIMEOUT [/bold black on yellow]",
+    MissionStatus.INTERRUPTED: "[bold black on yellow] INTERRUPTED [/bold black on yellow]",
+    MissionStatus.REVIEW_REJECTED: "[bold white on red] REJECTED [/bold white on red]",
+}
+
+_PARALLEL_STATUS_BADGES: dict[ParallelStatus, str] = {
+    ParallelStatus.PLANNED: "[dim] PLANNED [/dim]",
+    ParallelStatus.DISPATCHED: "[bold black on yellow] RUNNING [/bold black on yellow]",
+    ParallelStatus.COMPLETED: "[bold white on green] DONE [/bold white on green]",
+    ParallelStatus.PARTIAL: "[bold black on yellow] PARTIAL [/bold black on yellow]",
+    ParallelStatus.FAILED: "[bold white on red] FAILED [/bold white on red]",
+    ParallelStatus.CANCELLED: "[dim] CANCELLED [/dim]",
+}
+
+# Per-category tool call colors for tail/replay rendering.
+_TOOL_COLORS: dict[str, str] = {
+    # file I/O
+    "Read": "blue",
+    "Write": "blue",
+    "Edit": "blue",
+    # search
+    "Grep": "cyan",
+    "Glob": "cyan",
+    # execution
+    "Bash": "yellow",
+    # web
+    "WebFetch": "magenta",
+    "WebSearch": "magenta",
+    # sub-agents
+    "Agent": "green",
+}
+
+
+def _tool_color(name: str) -> str:
+    """Return the Rich color name for a given tool, falling back to 'dim'."""
+    return _TOOL_COLORS.get(name, "dim")
+
+
+def _relative_time(iso: str | None) -> str:
+    """Convert an ISO-8601 UTC string to a human-readable relative time string."""
+    if not iso:
+        return "[dim](unknown)[/dim]"
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - dt
+        s = int(delta.total_seconds())
+        if s < 60:
+            return "just now"
+        if s < 3600:
+            return f"{s // 60}m ago"
+        if s < 86400:
+            return f"{s // 3600}h ago"
+        if s < 7 * 86400:
+            return f"{s // 86400}d ago"
+        return dt.strftime("%b %d")
+    except ValueError:
+        return iso[:16]  # fallback: first 16 chars of ISO string
 
 
 # ----- mission lookup -------------------------------------------------------
