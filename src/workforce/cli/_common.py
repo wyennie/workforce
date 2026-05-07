@@ -123,6 +123,7 @@ def _make_renderer() -> Any:
 # Status -> Rich-styled label. Defined once here so every renderer agrees.
 
 _STATUS_STYLES = {
+    MissionStatus.RUNNING: "[cyan]running[/cyan]",
     MissionStatus.COMPLETED: "[green]completed[/green]",
     MissionStatus.ERROR: "[red]error[/red]",
     MissionStatus.WALL_TIMEOUT: "[yellow]wall_timeout[/yellow]",
@@ -141,6 +142,7 @@ _PARALLEL_STATUS_STYLES = {
 
 # Pill-style badge labels for use in detail views (mission show, post-dispatch).
 _STATUS_BADGES: dict[MissionStatus, str] = {
+    MissionStatus.RUNNING: "[bold white on cyan] RUNNING [/bold white on cyan]",
     MissionStatus.COMPLETED: "[bold white on green] DONE [/bold white on green]",
     MissionStatus.ERROR: "[bold white on red] ERROR [/bold white on red]",
     MissionStatus.WALL_TIMEOUT: "[bold black on yellow] TIMEOUT [/bold black on yellow]",
