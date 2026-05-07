@@ -129,7 +129,7 @@ runs:
 
         if [[ -z "${OUTPUT_FILE}" || ! -f "${OUTPUT_FILE}" ]]; then
           echo "::warning::workforce did not write an output file; mission may have failed to start."
-          printf 'mission-id=\nstatus=errored\nbranch=\n' >> "$GITHUB_OUTPUT"
+          printf 'mission-id=\nstatus=error\nbranch=\n' >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
@@ -142,7 +142,7 @@ runs:
 
         lines = (
             "mission-id=" + d.get("mission_id", "") + "\n"
-            + "status="   + d.get("status", "errored") + "\n"
+            + "status="   + d.get("status", "error") + "\n"
             + "branch="   + d.get("branch", "") + "\n"
         )
         with open(github_output, "a") as fh:
