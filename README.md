@@ -386,7 +386,7 @@ Remove a specialist from a project (one at a time).
 workforce project list
 ```
 
-List all registered projects with their IDs, kind, assigned specialists, and paths.
+List all registered projects with their IDs, assigned specialists, and paths.
 
 ---
 
@@ -1258,7 +1258,7 @@ Both files are append-only and grow unboundedly. Large memory files slow context
 
 `docs` also omits Bash and WebFetch. For full tool lists, use `workforce templates`.
 
-**Custom specialists:** Use `workforce hire <name> --role "…" --model "…"` and optionally `--tools TOOL [TOOL …]` to create a fully custom specialist without a template.
+**Custom specialists:** Use `workforce hire <name> --role "…" --model "…"` to create a fully custom specialist without a template.
 
 **Specialist name rules:** `^[a-z][a-z0-9_-]{0,31}$` — lowercase, max 32 characters.
 
@@ -1286,7 +1286,7 @@ All files live at `~/.workforce/projects/<project-id>/missions/<mission-id>/`.
 | `mission_id` | string | `m-YYYYMMDD-HHMMSS-xxxx` |
 | `status` | string | `running`, `completed`, `error`, `wall_timeout`, `interrupted`, `review_rejected` |
 | `specialist` | string | Specialist name |
-| `cost_usd` | float | Total cost including Manager and Reviewer rounds |
+| `cost_usd` | float | Specialist cost only |
 | `manager_cost_usd` | float | Manager planning cost (0 when `--specialist` used) |
 | `review_cost_usd` | float | Sum of all Reviewer rounds |
 | `branch` | string\|null | `workforce/<mission-id>`; `null` for workspace |
@@ -1473,7 +1473,7 @@ Exactly one of `ticket` or `ticket-file` must be provided.
 | Output | Description |
 |---|---|
 | `mission-id` | Unique mission identifier (`m-YYYYMMDD-HHMMSS-xxxx`) |
-| `status` | Terminal status: `completed`, `failed`, `errored`, or `review_rejected` |
+| `status` | Terminal status: `completed`, `error`, `wall_timeout`, `interrupted`, or `review_rejected` |
 | `branch` | Git branch created for the mission |
 
 ### Exit codes

@@ -63,8 +63,8 @@ outputs:
 
   status:
     description: >
-      Terminal status of the mission: completed | failed | errored |
-      review_rejected
+      Terminal status of the mission: completed | error | wall_timeout |
+      interrupted | review_rejected
     value: ${{ steps.parse-result.outputs.status }}
 
   branch:
