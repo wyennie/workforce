@@ -162,6 +162,7 @@ _BASH_DENY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\brm\b"), "rm (file deletion)"),
     (re.compile(r"\bmv\b"), "mv (file move/rename)"),
     (re.compile(r"\bcp\b"), "cp (file copy)"),
+    (re.compile(r"\btee\b"), "tee (file write via pipe)"),
     (re.compile(r"\bchmod\b"), "chmod (permission change)"),
     (re.compile(r"\bchown\b"), "chown (ownership change)"),
     (re.compile(r"\bpip\s+install\b"), "pip install (package installation)"),
@@ -171,6 +172,12 @@ _BASH_DENY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bpnpm\s+(?:add|install)\b"), "pnpm add/install (package installation)"),
     (re.compile(r"\buv\s+pip\s+install\b"), "uv pip install (package installation)"),
 ]
+
+# Git subcommands that are safe for a read-only review session.
+_GIT_SAFE_SUBCOMMANDS: frozenset[str] = frozenset({
+    "diff", "log", "status", "show", "ls-files",
+    "rev-parse", "shortlog", "branch", "tag", "remote",
+})
 
 
 def _has_write_redirect(cmd: str) -> bool:
@@ -236,11 +243,22 @@ def make_read_only_bash_callback() -> CanUseTool:
                 ),
             )
 
-        # Git commands are allowed in full after the redirect check above —
-        # they carry their own permission model and are typically read ops
-        # (diff, log, status, show).
+        # Allow only safe read-only git subcommands.  A blanket git allowlist
+        # would permit git apply, git am, git stash pop, etc. which write files.
         if cmd.startswith("git ") or cmd == "git":
-            return PermissionResultAllow()
+            # Find the subcommand: first token after 'git' that isn't a flag.
+            parts = cmd.split()
+            subcmd = next((p for p in parts[1:] if not p.startswith("-")), "")
+            if subcmd in _GIT_SAFE_SUBCOMMANDS:
+                return PermissionResultAllow()
+            return PermissionResultDeny(
+                message=(
+                    f"Bash command rejected: 'git {subcmd}' is not in the "
+                    f"allowed read-only subcommand list "
+                    f"({', '.join(sorted(_GIT_SAFE_SUBCOMMANDS))}). "
+                    f"(command: {cmd!r})"
+                ),
+            )
 
         # Deny specific destructive or install commands.
         for pattern, description in _BASH_DENY_PATTERNS:

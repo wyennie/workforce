@@ -535,6 +535,12 @@ async def run_manager_chat(
         else:
             output.rule("[dim]session ended[/dim]", style="dim")
 
+        # Signal input_loop to exit.  Without this, when the SDK session ends
+        # normally (generator exhausts without error), input_loop hangs forever
+        # waiting on turn_done and gather() never resolves.
+        stop.set()
+        await pending_inputs.put(None)   # unblocks feed() so gather() can exit
+
     async def input_loop() -> None:
         while not stop.is_set():
             await turn_done.wait()

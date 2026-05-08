@@ -847,11 +847,21 @@ def _dispatch_detached(
 
     mission_id = mission_id_override or mission.generate_mission_id()
 
+    # Write ticket to a tempfile to avoid OS arg-length limits on long tickets
+    # (e.g. GitHub issues).  delete=False because the detached child process
+    # reads the file after this process exits; /tmp is cleaned up by the OS.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="wf-ticket-", delete=False
+    ) as _tf:
+        _tf.write(ticket)
+        _ticket_path = _tf.name
+
     # Re-invoke ourselves without the detach flag, with the pinned mission id.
     # `python -m workforce` runs the same package the parent runs regardless
     # of pip/pipx install path.
     argv: list[str] = [
-        sys.executable, "-m", "workforce", "dispatch", project_ref, ticket,
+        sys.executable, "-m", "workforce", "dispatch", project_ref,
+        "--file", _ticket_path,
         "--specialist", specialist,
         "--mission-id", mission_id,
         "--max-turns", str(max_turns),

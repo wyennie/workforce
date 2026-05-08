@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 
 
 def workforce_dispatch(
@@ -27,12 +29,25 @@ def workforce_dispatch(
     Returns:
         Parsed JSON result dict on success, or ``{'error': stderr}`` on failure.
     """
-    cmd = ["workforce", "dispatch", project, ticket, "--ci"]
-    if specialist:
-        cmd += ["--specialist", specialist]
-    if auto_merge:
-        cmd += ["--auto-merge"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # Write ticket to a tempfile to avoid OS arg-length limits on long tickets.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="wf-ticket-", delete=False
+    ) as tf:
+        tf.write(ticket)
+        ticket_path = Path(tf.name)
+
+    try:
+        cmd = ["workforce", "dispatch", project, "--file", str(ticket_path), "--ci"]
+        if specialist:
+            cmd += ["--specialist", specialist]
+        if auto_merge:
+            cmd += ["--auto-merge"]
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=1920
+        )
+    finally:
+        ticket_path.unlink(missing_ok=True)
+
     if result.returncode == 0:
         return json.loads(result.stdout)
     return {"error": result.stderr}

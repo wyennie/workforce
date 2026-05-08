@@ -33,7 +33,9 @@ def test_dispatch_success():
 
     assert result == payload
     args = mock_run.call_args[0][0]
-    assert args[:4] == ["workforce", "dispatch", "my-project", "Fix the bug"]
+    # Ticket is now passed via --file to avoid OS arg-length limits.
+    assert args[:3] == ["workforce", "dispatch", "my-project"]
+    assert "--file" in args
     assert "--ci" in args
 
 
