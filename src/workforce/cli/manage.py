@@ -3,8 +3,8 @@
 `workforce manage <project>` opens a Claude Agent SDK session bound to a
 specific project, with a system prompt that teaches the Manager about the
 workforce CLI. The user chats normally; the Manager dispatches workers via
-`workforce dispatch ... --window` so each spawned mission opens its own
-terminal window the user can watch.
+`workforce dispatch ... --background` so each spawned mission runs detached;
+output appears in a shared tail window the user keeps open in another terminal.
 
 This is the Manager-as-a-conversation shape (vs the one-shot
 `workforce dispatch` command): persistent context, multi-turn, the Manager
@@ -15,11 +15,20 @@ project state on disk.
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.spinner import Spinner
+from rich.table import Table
+from rich.text import Text
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -35,6 +44,7 @@ from claude_agent_sdk import (
 )
 
 from workforce import output, paths
+from workforce.cli._common import _summarize_tool_args, _tool_color, _truncate
 from workforce.project import Project
 from workforce.specialist import RosterStore
 
@@ -186,14 +196,61 @@ def _build_manager_prompt(
     )
 
 
-# ----- chat session ---------------------------------------------------------
+# ----- banner ---------------------------------------------------------------
 
 
-_CHAT_BANNER = """\
-[bold]workforce manage[/bold] — interactive Manager session for [bold]{name}[/bold]
-[dim]project: {project_id}  ({kind})  cwd: {repo_path}[/dim]
-[dim]commands: empty line submits a multi-line draft; type [bold]/exit[/bold] or Ctrl-D to leave.[/dim]
-"""
+def _render_session_banner(
+    project: Project,
+    roster_store: RosterStore,
+    *,
+    branch: str | None = None,
+) -> None:
+    """Render the Rich Panel banner shown once at session start."""
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold dim", no_wrap=True)
+    grid.add_column()
+
+    grid.add_row(
+        "project",
+        f"[bold]{project.name}[/bold]  [dim]{project.id}[/dim]",
+    )
+    grid.add_row("kind", project.kind)
+    grid.add_row("directory", str(project.repo_path))
+
+    if project.assigned_specialists:
+        specs_lines: list[str] = []
+        for name in project.assigned_specialists:
+            if roster_store.exists(name):
+                sp = roster_store.load(name)
+                role_short = sp.role.split("\n", 1)[0].strip()[:50]
+                specs_lines.append(
+                    f"[bold]{name}[/bold] [dim]({sp.model}) — {role_short}[/dim]"
+                )
+            else:
+                specs_lines.append(f"[dim]{name} (missing)[/dim]")
+        grid.add_row("specialists", "\n".join(specs_lines))
+    else:
+        grid.add_row("specialists", "[dim](none — hire and assign first)[/dim]")
+
+    if branch:
+        grid.add_row("branch", f"[bold cyan]{branch}[/bold cyan]")
+
+    output.raw(Panel(
+        grid,
+        title="[bold cyan]workforce manage[/bold cyan]",
+        title_align="left",
+        border_style="cyan",
+        padding=(0, 1),
+    ))
+    output.info(
+        "[dim]  /exit or Ctrl-D to leave  ·  blank line submits multi-line drafts[/dim]"
+    )
+
+
+# ----- prompt styling -------------------------------------------------------
+
+_PROMPT_MAIN = HTML("<ansigreen><b>you</b></ansigreen> <ansicyan>›</ansicyan> ")
+_PROMPT_CONT = HTML("<ansicyan> ·</ansicyan> ")
 
 
 async def _read_user_input(session: PromptSession[str]) -> str | None:
@@ -211,7 +268,7 @@ async def _read_user_input(session: PromptSession[str]) -> str | None:
     """
     lines: list[str] = []
     try:
-        first = await session.prompt_async("manager> ")
+        first = await session.prompt_async(_PROMPT_MAIN)
     except (EOFError, KeyboardInterrupt):
         return None
     if first.strip() in ("/exit", "/quit"):
@@ -221,7 +278,7 @@ async def _read_user_input(session: PromptSession[str]) -> str | None:
     lines.append(first)
     while True:
         try:
-            nxt = await session.prompt_async("        ")
+            nxt = await session.prompt_async(_PROMPT_CONT)
         except (EOFError, KeyboardInterrupt):
             break
         if not nxt.strip():
@@ -230,49 +287,130 @@ async def _read_user_input(session: PromptSession[str]) -> str | None:
     return "\n".join(lines).strip()
 
 
-def _render_message(msg: Any) -> None:
+# ----- spinner (thinking indicator) ----------------------------------------
+
+
+class _SpinnerState:
+    """Owns one transient Rich Live spinner; safe to start/stop multiple times.
+
+    Guards itself against CI mode and non-TTY contexts so tests and headless
+    runs don't see stray ANSI sequences.
+    """
+
+    def __init__(self) -> None:
+        self._live: Live | None = None
+
+    def _should_show(self) -> bool:
+        return not output.is_ci_mode() and sys.stdout.isatty()
+
+    def start(self) -> None:
+        """Start the spinner if it is not already running."""
+        if self._live is not None or not self._should_show():
+            return
+        spinner = Spinner(
+            "dots",
+            text=Text(" working…", style="dim"),
+            style="cyan",
+        )
+        self._live = Live(
+            spinner,
+            console=output._stdout,
+            transient=True,
+            refresh_per_second=12,
+        )
+        self._live.start()
+
+    def stop(self) -> None:
+        """Stop and erase the spinner if it is running."""
+        if self._live is None:
+            return
+        self._live.stop()
+        self._live = None
+
+
+# ----- message rendering ----------------------------------------------------
+
+
+def _extract_tool_result_text(block: ToolResultBlock) -> str:
+    """Extract plain text from a ToolResultBlock's content."""
+    if isinstance(block.content, str):
+        return block.content
+    if isinstance(block.content, list):
+        return " ".join(getattr(b, "text", "") for b in block.content)
+    return ""
+
+
+def _render_tool_call(name: str, args: dict[str, Any]) -> None:
+    """Print a color-coded one-line tool call preview."""
+    color = _tool_color(name)
+    preview = _truncate(_summarize_tool_args(name, args), 72)
+    output.info(f"  [{color}]→ {name}[/{color}][dim]  {preview}[/dim]")
+
+
+def _render_message(msg: Any, *, _state: dict[str, Any]) -> None:
     """Render an SDK message to the chat terminal.
 
-    Mirrors Claude Code's chat feel: assistant text streams; tool calls show
-    a one-line note so the user knows when the Manager is doing something.
+    Args:
+        msg: Any SDK message type (AssistantMessage, UserMessage, etc.).
+        _state: Mutable state dict shared across calls within one render_loop.
+            Keys used: ``header_printed`` (bool), ``total_cost`` (float),
+            ``total_turns`` (int).
     """
     if isinstance(msg, AssistantMessage):
+        if not _state.get("header_printed"):
+            output.info("\n[bold green]●[/bold green] [bold]manager[/bold]")
+            _state["header_printed"] = True
         for block in msg.content:
             if isinstance(block, TextBlock) and block.text.strip():
-                output.raw(block.text.rstrip())
+                output.raw(Markdown(block.text.rstrip(), code_theme="monokai"))
+            elif isinstance(block, ToolUseBlock):
+                _render_tool_call(block.name, block.input)
             elif isinstance(block, ThinkingBlock):
                 # Don't echo thinking — too noisy for chat. The events log
                 # has it for replay.
                 pass
-            elif isinstance(block, ToolUseBlock):
-                summary = _summarize_tool(block.name, block.input)
-                output.info(f"[dim]→ {block.name}({summary})[/dim]")
+
     elif isinstance(msg, UserMessage):
         # UserMessage.content is `str | list[ContentBlock]` — only iterate
         # the list form; bare strings are user input we don't need to echo.
         if isinstance(msg.content, list):
             for block in msg.content:
                 if isinstance(block, ToolResultBlock) and block.is_error:
-                    # Only flag failures — successes would drown the chat.
-                    text = ""
-                    if isinstance(block.content, str):
-                        text = block.content
-                    elif isinstance(block.content, list):
-                        text = " ".join(
-                            getattr(b, "text", "") for b in block.content
-                        )
-                    output.warn(f"[dim]✗ tool error: {text[:200]}[/dim]")
+                    text = _extract_tool_result_text(block)
+                    output.warn(
+                        f"  [red]✗[/red] [dim]tool error:[/dim] {text[:200]}"
+                    )
+
     elif isinstance(msg, SystemMessage):
-        # Permission prompts surface here — show them.
+        # Permission prompts surface here — show them clearly.
         if getattr(msg, "subtype", "") == "permission_request":
-            output.warn(f"[bold]permission needed:[/bold] {msg}")
+            output.raw(Panel(
+                str(msg),
+                title="[bold yellow]⚠ permission needed[/bold yellow]",
+                title_align="left",
+                border_style="yellow",
+                padding=(0, 1),
+            ))
+
     elif isinstance(msg, ResultMessage):
-        # End-of-turn marker; don't print, but caller uses this to re-prompt.
-        pass
+        # Accumulate cost/turns for session-end display.
+        _state["total_cost"] = _state.get("total_cost", 0.0) + (
+            msg.total_cost_usd or 0.0
+        )
+        _state["total_turns"] = _state.get("total_turns", 0) + (
+            msg.num_turns or 0
+        )
+        # Dim rule closes the turn visually.
+        output.rule(style="dim")
+        _state["header_printed"] = False
 
 
 def _summarize_tool(name: str, args: dict[str, Any]) -> str:
-    """Return a compact one-line preview of a tool call for the chat display."""
+    """Return a compact one-line preview of a tool call for the chat display.
+
+    Kept for backward compatibility with existing tests. New rendering code
+    uses :func:`_render_tool_call` instead.
+    """
     if name == "Bash":
         cmd = str(args.get("command", ""))
         return cmd if len(cmd) <= 80 else cmd[:77] + "..."
@@ -305,10 +443,7 @@ async def run_manager_chat(
         allowed_tools=["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
     )
 
-    output.raw(_CHAT_BANNER.format(
-        name=project.name, project_id=project.id, kind=project.kind,
-        repo_path=project.repo_path,
-    ))
+    _render_session_banner(project, roster_store, branch=branch)
 
     # Pop up the single shared tail window. Every worker the Manager dispatches
     # via `--background` lands in here automatically, labeled by mission id +
@@ -334,11 +469,18 @@ async def run_manager_chat(
     # Pipeline: input_loop reads user lines and pushes onto pending_inputs.
     # feed() yields them as SDK message dicts. render_loop consumes SDK
     # responses and signals turn_done so input_loop can re-prompt.
+    #
+    # Terminal ownership:
+    #   AI phase  — Rich (output.*, spinner Live) owns the terminal.
+    #   Input phase — prompt_toolkit owns the terminal.
+    # Rich Live MUST be stopped before prompt_async() is called. The
+    # turn_done event and _spinner.stop() call in input_loop enforce this.
     pending_inputs: asyncio.Queue[str | None] = asyncio.Queue()
     turn_done = asyncio.Event()
     turn_done.set()  # ready for first user input
     stop = asyncio.Event()
     _session: PromptSession[str] = PromptSession()
+    _spinner = _SpinnerState()
 
     async def feed() -> AsyncIterator[dict[str, Any]]:
         while True:
@@ -354,21 +496,54 @@ async def run_manager_chat(
             }
 
     async def render_loop() -> None:
+        _state: dict[str, Any] = {
+            "header_printed": False,
+            "total_cost": 0.0,
+            "total_turns": 0,
+        }
         try:
+            first_message = True
             async for msg in query(prompt=feed(), options=options):
-                _render_message(msg)
+                if first_message:
+                    # Stop spinner on first real SDK message — transient=True
+                    # erases the spinner line cleanly before response text.
+                    _spinner.stop()
+                    first_message = False
+                _render_message(msg, _state=_state)
                 if isinstance(msg, ResultMessage):
                     turn_done.set()
         except Exception as e:  # SDK or transport failure
-            output.fail(f"chat session ended: {type(e).__name__}: {e}")
+            _spinner.stop()
+            output.raw(Panel(
+                f"[red]{type(e).__name__}[/red]: {e}",
+                title="[bold red]✗ session error[/bold red]",
+                title_align="left",
+                border_style="red",
+                padding=(0, 1),
+            ))
             turn_done.set()   # unblock input_loop so gather() can exit
             stop.set()
+
+        # Session-end rule with accumulated cost/turns.
+        total_turns = _state.get("total_turns", 0)
+        total_cost = _state.get("total_cost", 0.0)
+        if total_turns > 0:
+            output.rule(
+                f"[dim]session ended — {total_turns} turns  ${total_cost:.4f}[/dim]",
+                style="dim",
+            )
+        else:
+            output.rule("[dim]session ended[/dim]", style="dim")
 
     async def input_loop() -> None:
         while not stop.is_set():
             await turn_done.wait()
             if stop.is_set():
                 break
+            # Rich Live must be stopped before prompt_async — spinner was already
+            # stopped in render_loop on first message; this stop() is a no-op
+            # for the normal path but guards against any edge cases.
+            _spinner.stop()
             text = await _read_user_input(_session)
             if text is None:
                 # EOF or /exit
@@ -377,13 +552,14 @@ async def run_manager_chat(
                 break
             if not text.strip():
                 continue  # skip empty turn, re-prompt
+            # Start spinner before submitting so it's visible during AI generation.
+            _spinner.start()
             await pending_inputs.put(text)
 
     try:
         await asyncio.gather(render_loop(), input_loop())
     except KeyboardInterrupt:
         output.info("[dim](interrupted)[/dim]")
-    output.info("[dim]session ended.[/dim]")
     return 0
 
 

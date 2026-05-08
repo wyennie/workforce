@@ -52,9 +52,9 @@ def fail(message: str) -> None:
     _stderr.print(f"[red]✗[/red] {message}")
 
 
-def rule(title: str = "") -> None:
-    """Print a horizontal rule to stdout, with an optional title."""
-    _stdout.rule(title)
+def rule(title: str = "", *, style: str = "rule.line") -> None:
+    """Print a horizontal rule to stdout, with an optional title and style."""
+    _stdout.rule(title, style=style)
 
 
 def print_table(table: Table) -> None:
