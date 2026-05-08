@@ -8,3 +8,6 @@ __pycache__/
 build/
 dist/
 *.egg
+
+# Local workforce project state
+.workforce-project-id
