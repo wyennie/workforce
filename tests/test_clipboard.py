@@ -16,7 +16,6 @@ from workforce.cli._clipboard import (
     grab_clipboard_image,
 )
 
-
 # ---------------------------------------------------------------------------
 # Minimal valid PNG bytes (1×1 white pixel) for use as stubs.
 # Generated once so tests don't depend on Pillow being installed.
@@ -129,6 +128,7 @@ class TestTryPillow:
             pytest.skip("Pillow not installed")
 
         import io
+
         from PIL import Image as _Image
 
         fake_img = _Image.new("RGB", (2, 2), color=(255, 0, 0))

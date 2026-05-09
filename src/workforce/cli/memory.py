@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.table import Table
@@ -124,7 +123,7 @@ def memory_show(
 def memory_search(
     specialist: str = typer.Argument(..., help="Specialist name."),
     query: str = typer.Argument(..., help="Search query (case-insensitive)."),
-    project_ref: Optional[str] = typer.Option(
+    project_ref: str | None = typer.Option(
         None,
         "--project",
         metavar="PROJECT",
@@ -186,7 +185,7 @@ def memory_search(
 @sub.command("export")
 def memory_export(
     specialist: str = typer.Argument(..., help="Specialist name."),
-    project_ref: Optional[str] = typer.Option(
+    project_ref: str | None = typer.Option(
         None,
         "--project",
         metavar="PROJECT",
@@ -246,7 +245,7 @@ def memory_import(
         file_okay=True,
         dir_okay=False,
     ),
-    project_ref: Optional[str] = typer.Option(
+    project_ref: str | None = typer.Option(
         None,
         "--project",
         metavar="PROJECT",
@@ -316,6 +315,8 @@ async def _run_compact_sdk(text: str, model: str) -> str:
         ClaudeAgentOptions,
         ResultMessage,
         TextBlock,
+    )
+    from claude_agent_sdk import (
         query as sdk_query,
     )
 
@@ -344,19 +345,19 @@ async def _run_compact_sdk(text: str, model: str) -> str:
 @sub.command("compact")
 def memory_compact(
     specialist: str = typer.Argument(..., help="Specialist name."),
-    project_ref: Optional[str] = typer.Option(
+    project_ref: str | None = typer.Option(
         None,
         "--project",
         metavar="PROJECT",
         help="Compact per-project memory for this project instead of cross-project.",
     ),
-    keep_last: Optional[int] = typer.Option(
+    keep_last: int | None = typer.Option(
         None,
         "--keep-last",
         metavar="N",
         help="Preserve last N lines verbatim; compact only older content.",
     ),
-    threshold_tokens: Optional[int] = typer.Option(
+    threshold_tokens: int | None = typer.Option(
         None,
         "--threshold-tokens",
         metavar="N",

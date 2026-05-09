@@ -173,7 +173,7 @@ class ProjectConfig(BaseModel):
     max_cost: float | None = None
 
 
-def load_project_config(repo_path: Path) -> "ProjectConfig":
+def load_project_config(repo_path: Path) -> ProjectConfig:
     """Load ``.workforce.toml`` from *repo_path*, returning an empty config if absent.
 
     Args:
@@ -266,7 +266,7 @@ class ProjectStore:
             )
         return matches[0]
 
-    def find_by_cwd(self, start_path: Path | None = None) -> "Project | None":
+    def find_by_cwd(self, start_path: Path | None = None) -> Project | None:
         """Walk up from *start_path* (default: cwd) to find a ``.workforce-project-id`` marker.
 
         Returns the registered Project whose id matches the first marker found

@@ -26,7 +26,6 @@ from workforce.runner import RunLimits
 from workforce.specialist import RosterStore
 from workforce.worktree import WorktreeManager
 
-from ._completions import complete_mission_id
 from ._common import (
     _PARALLEL_STATUS_BADGES,
     _PARALLEL_STATUS_STYLES,
@@ -41,6 +40,7 @@ from ._common import (
     _tool_color,
     _truncate,
 )
+from ._completions import complete_mission_id
 
 
 def missions_command(
@@ -57,7 +57,7 @@ def missions_command(
     missions = _list_project_missions(proj.id)
     if not missions:
         output.raw(Panel(
-            f"[dim]No missions yet.\n\nRun [bold]workforce dispatch[/bold] to start one.[/dim]",
+            "[dim]No missions yet.\n\nRun [bold]workforce dispatch[/bold] to start one.[/dim]",
             title=f"[bold]{proj.name}[/bold]",
             title_align="left",
             border_style="dim",
@@ -253,7 +253,7 @@ def _render_replay_event(
     evt: dict[str, Any],
     *,
     show_thinking: bool,
-    _elapsed: "Callable[[], str] | None" = None,
+    _elapsed: Callable[[], str] | None = None,
 ) -> None:
     """Render a single deserialized event line to the terminal during replay."""
     t = evt.get("_type")

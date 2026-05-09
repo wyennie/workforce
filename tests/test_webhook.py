@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from workforce.webhook.verify import verify_signature
-from workforce.webhook.config import WebhookConfig, ProjectMapping, load_webhook_config
+from workforce.webhook.config import ProjectMapping, WebhookConfig, load_webhook_config
 from workforce.webhook.handlers import handle_issues, handle_pull_request
-
+from workforce.webhook.verify import verify_signature
 
 # ---------------------------------------------------------------------------
 # Signature verification

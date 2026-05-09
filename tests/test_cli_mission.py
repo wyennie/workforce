@@ -4,13 +4,11 @@ import datetime as dt
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
 from typer.testing import CliRunner
-
-from unittest.mock import MagicMock
 
 from workforce.cli import app
 from workforce.cli._common import _summarize_tool_args, _truncate

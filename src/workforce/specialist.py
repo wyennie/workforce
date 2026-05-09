@@ -24,7 +24,6 @@ import shutil
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 

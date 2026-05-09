@@ -11,7 +11,6 @@ from typer.testing import CliRunner
 from workforce.cli import app
 from workforce.ticket_templates import TICKET_TEMPLATES
 
-
 # ---------------------------------------------------------------------------
 # Template content tests
 # ---------------------------------------------------------------------------

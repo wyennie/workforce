@@ -16,7 +16,7 @@ try:
     from mcp.types import TextContent, Tool
 except ImportError:
     print("MCP package not installed. Run: pip install workforce-ai[mcp]")
-    raise SystemExit(1)
+    raise SystemExit(1) from None
 
 import json
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import typer
-
 
 def mcp_server_command() -> None:
     """Start the workforce MCP server on stdio.

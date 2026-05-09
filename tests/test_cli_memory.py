@@ -11,7 +11,6 @@ from workforce.cli import app
 from workforce.project import Project, ProjectStore
 from workforce.specialist import RosterStore, Specialist
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

@@ -19,6 +19,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .config import WebhookConfig, load_webhook_config
+from .handlers import handle_issues, handle_pull_request
+from .verify import verify_signature
+
 logger = logging.getLogger(__name__)
 
 # FastAPI is an optional dependency ([webhook] extra). Import lazily so the
@@ -29,10 +33,6 @@ try:
     _FASTAPI_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _FASTAPI_AVAILABLE = False
-
-from .config import WebhookConfig, load_webhook_config
-from .handlers import handle_issues, handle_pull_request
-from .verify import verify_signature
 
 
 def create_app(config_path: Path | None = None) -> Any:
@@ -102,11 +102,11 @@ def create_app(config_path: Path | None = None) -> Any:
         event_type = x_github_event or "unknown"
         try:
             event: dict = json.loads(payload)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="invalid JSON payload",
-            )
+            ) from exc
 
         logger.info("received %r event", event_type)
 

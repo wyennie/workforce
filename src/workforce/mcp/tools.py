@@ -62,8 +62,8 @@ def workforce_mission_status(mission_id: str) -> dict:
     Returns:
         Parsed meta.json dict, or ``{'error': 'mission <id> not found'}``.
     """
-    from workforce.project import ProjectStore
     from workforce import mission as m
+    from workforce.project import ProjectStore
 
     store = ProjectStore()
     for proj in store.list():
@@ -109,8 +109,8 @@ def workforce_mission_result(mission_id: str) -> str:
     Returns:
         Raw Markdown text of result.md, or an error string when not found.
     """
-    from workforce.project import ProjectStore
     from workforce import mission as m
+    from workforce.project import ProjectStore
 
     store = ProjectStore()
     for proj in store.list():

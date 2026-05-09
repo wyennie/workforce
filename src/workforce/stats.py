@@ -19,7 +19,6 @@ from typing import TypedDict
 from workforce import paths
 from workforce.mission import MissionStatus
 
-
 # ----- Per-record store (raw, before filtering) -----------------------------
 
 
@@ -244,7 +243,7 @@ def _parse_started_at(started_at: str) -> dt.datetime | None:
     try:
         parsed = dt.datetime.fromisoformat(started_at.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            parsed = parsed.replace(tzinfo=dt.UTC)
         return parsed
     except (ValueError, AttributeError):
         return None
@@ -271,7 +270,7 @@ def query_stats(since_date: str | None = None) -> StatsResult:
     if since_date is not None:
         try:
             cutoff = dt.datetime.fromisoformat(since_date).replace(
-                tzinfo=dt.timezone.utc
+                tzinfo=dt.UTC
             )
         except ValueError:
             cutoff = None  # invalid date → no filter

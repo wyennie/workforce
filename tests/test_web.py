@@ -22,7 +22,6 @@ from workforce.mission import MissionMeta, MissionPaths, MissionStatus  # noqa: 
 from workforce.specialist import Specialist, SpecialistStats  # noqa: E402
 from workforce.web.app import app  # noqa: E402
 
-
 # ── fixtures & helpers ───────────────────────────────────────────────────────
 
 

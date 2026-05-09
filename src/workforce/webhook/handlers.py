@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .config import WebhookConfig, ProjectMapping
+from .config import ProjectMapping, WebhookConfig
 
 logger = logging.getLogger(__name__)
 

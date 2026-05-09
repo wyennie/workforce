@@ -13,7 +13,6 @@ from typer.testing import CliRunner
 from workforce.cli import app
 from workforce.specialist import RosterStore, Specialist
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

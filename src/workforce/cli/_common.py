@@ -7,7 +7,7 @@ can pull from one place without circular imports.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from claude_agent_sdk import (
@@ -189,7 +189,7 @@ def _relative_time(iso: str | None) -> str:
         return "[dim](unknown)[/dim]"
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        delta = datetime.now(timezone.utc) - dt
+        delta = datetime.now(UTC) - dt
         s = int(delta.total_seconds())
         if s < 60:
             return "just now"

@@ -7,8 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from workforce.utils import _FENCE_RE
-from workforce.utils import _atomic_write
+from workforce.utils import _FENCE_RE, _atomic_write
 
 
 class TestFenceRE:

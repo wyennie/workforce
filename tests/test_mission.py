@@ -870,7 +870,6 @@ def test_append_project_memory_without_fcntl(tmp_path: Path, monkeypatch: pytest
 
 def test_scan_commits_error_includes_stderr(tmp_path: Path) -> None:
     """When git log fails, commit_scan_error should include stderr content."""
-    import sys
 
     # scan_commits raises CalledProcessError with a bad base_sha; git will
     # write an error to stderr that should appear in the exception message.

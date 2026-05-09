@@ -10,7 +10,6 @@ from workforce.cli._completions import (
     complete_specialist,
 )
 
-
 # Typer passes ctx and param alongside incomplete; we don't use them.
 CTX = None
 ARGS = None

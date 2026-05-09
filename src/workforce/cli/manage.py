@@ -21,17 +21,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.key_binding import KeyBindings
-
-from rich.live import Live
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.spinner import Spinner
-from rich.table import Table
-from rich.text import Text
-
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
@@ -44,6 +33,15 @@ from claude_agent_sdk import (
     UserMessage,
     query,
 )
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.spinner import Spinner
+from rich.table import Table
+from rich.text import Text
 
 from workforce import output, paths
 from workforce.cli._common import _summarize_tool_args, _tool_color, _truncate
@@ -549,6 +547,7 @@ async def run_manager_chat(
         can still type literal control characters via Ctrl+V + <char>.
         """
         from prompt_toolkit.application import run_in_terminal
+
         from workforce.cli._clipboard import grab_clipboard_image
 
         result = grab_clipboard_image()

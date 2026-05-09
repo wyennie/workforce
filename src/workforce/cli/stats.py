@@ -102,7 +102,7 @@ def _print_csv(result: StatsResult, *, by_project: bool) -> None:
     writer = csv.writer(buf)
     if by_project:
         writer.writerow(["project", "missions", "cost", "success_rate"])
-        for proj_id, ps in sorted(result.by_project.items()):
+        for _proj_id, ps in sorted(result.by_project.items()):
             writer.writerow([
                 ps["project_name"],
                 ps["missions"],
@@ -192,7 +192,7 @@ def _print_totals(result: StatsResult) -> None:
         result: The aggregated stats to summarise.
     """
     t = result.totals
-    label = f"since filter applied" if result.filtered_count != t["missions"] else ""
+    label = "since filter applied" if result.filtered_count != t["missions"] else ""
     output.info(
         f"[dim]total missions: {t['missions']}  "
         f"completed: {t['completed']}  "

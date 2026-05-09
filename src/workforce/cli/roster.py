@@ -7,7 +7,6 @@ from rich.panel import Panel
 from rich.table import Table
 
 from workforce import output, paths
-from ._completions import complete_specialist
 from workforce.project import ProjectStore
 from workforce.specialist import (
     DEFAULT_MODEL,
@@ -17,6 +16,8 @@ from workforce.specialist import (
     Specialist,
     common_preamble,
 )
+
+from ._completions import complete_specialist
 
 
 def _store() -> RosterStore:

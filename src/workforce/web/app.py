@@ -24,7 +24,6 @@ except ImportError as exc:  # pragma: no cover
 
 from workforce import paths
 from workforce.mission import MissionMeta, mission_paths
-from workforce.project import ProjectStore
 from workforce.specialist import RosterStore
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"

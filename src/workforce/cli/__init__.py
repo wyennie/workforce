@@ -14,7 +14,23 @@ from workforce import project as project_mod
 from workforce.specialist import RosterStore
 from workforce.version import __version__
 
-from . import cleanup, config, dispatch, init, manage, marketplace, mcp, memory, mission, project, roster, serve, stats, ticket, webhook
+from . import (
+    cleanup,
+    config,
+    dispatch,
+    init,
+    manage,
+    marketplace,
+    mcp,
+    memory,
+    mission,
+    project,
+    roster,
+    serve,
+    stats,
+    ticket,
+    webhook,
+)
 
 app = typer.Typer(
     name="workforce",

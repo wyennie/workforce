@@ -12,7 +12,6 @@ from workforce.cli import app
 from workforce.mission import MissionStatus
 from workforce.stats import StatsResult, _cache_path, query_stats
 
-
 # ----- Fixtures -------------------------------------------------------------
 
 
@@ -253,7 +252,7 @@ def test_cache_is_reused_when_files_unchanged(isolated_home: Path) -> None:
     )
     r1 = query_stats()
     # Corrupt the underlying meta.json; cache should still return old data.
-    meta_path = (
+    (
         isolated_home / "projects" / "proj01" / "missions" / "m-001" / "meta.json"
     )
     # We can't simply corrupt it because that would change the mtime, which

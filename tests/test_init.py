@@ -12,8 +12,7 @@ from workforce.cli import app
 from workforce.cli.init import _generate_workforce_md
 from workforce.project import ProjectStore
 from workforce.specialist import RosterStore, Specialist
-from workforce.stacks import STACK_TEMPLATES, StackTemplate
-
+from workforce.stacks import STACK_TEMPLATES
 
 # ---------------------------------------------------------------------------
 # Fixtures

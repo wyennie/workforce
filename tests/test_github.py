@@ -7,9 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from workforce import github as github_mod
 from workforce.github import _parse_issue_url, _parse_pr_url, create_pr, fetch_issue, fetch_pr
-
 
 # ---------------------------------------------------------------------------
 # URL parsing

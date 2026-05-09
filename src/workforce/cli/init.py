@@ -5,12 +5,12 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.table import Table
 
-from workforce import output, paths, project as project_mod
+from workforce import output, paths
+from workforce import project as project_mod
 from workforce.specialist import RosterStore, Specialist
 from workforce.stacks import STACK_TEMPLATES
 from workforce.utils import _dump_toml
@@ -98,7 +98,7 @@ def _run_git(args: list[str], cwd: Path) -> None:
 
 
 def init_command(
-    template: Optional[str] = typer.Option(
+    template: str | None = typer.Option(
         None, "--template", "-t",
         help="Stack template to apply (use --list to see options).",
         metavar="NAME",
@@ -111,7 +111,7 @@ def init_command(
         False, "--list",
         help="Print available stack templates and exit.",
     ),
-    name: Optional[str] = typer.Option(
+    name: str | None = typer.Option(
         None, "--name",
         help="Project display name (default: directory basename).",
     ),
@@ -233,7 +233,7 @@ def init_command(
             _write_workforce_toml(repo_path, stack.project_config_defaults)
             output.success(f"wrote .workforce.toml with stack={template!r}")
 
-        for spec_name, template_key in zip(stack.specialist_names, stack.specialists):
+        for spec_name, template_key in zip(stack.specialist_names, stack.specialists, strict=False):
             if rstore.exists(spec_name):
                 # Specialist already in global roster — reuse and assign
                 spec = rstore.load(spec_name)
@@ -268,7 +268,7 @@ def init_command(
     wf_md = _generate_workforce_md(display_name, hired, hints)
     wf_md_path = repo_path / "WORKFORCE.md"
     wf_md_path.write_text(wf_md)
-    output.success(f"wrote WORKFORCE.md")
+    output.success("wrote WORKFORCE.md")
 
     # Print success summary
     output.rule()
@@ -374,8 +374,8 @@ def _run_demo() -> None:
     (demo_dir / "WORKFORCE.md").write_text(wf_md)
 
     output.success(f"demo project created at {demo_dir}")
-    output.info(f"  calculator.py  — module with add/subtract/multiply/divide")
-    output.info(f"  demo-ticket.md — starter ticket: add pytest tests")
+    output.info("  calculator.py  — module with add/subtract/multiply/divide")
+    output.info("  demo-ticket.md — starter ticket: add pytest tests")
     output.info("")
     output.info("[bold]Run this to start:[/bold]")
     output.info(

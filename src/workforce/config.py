@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import tomllib
 import warnings
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -21,9 +20,9 @@ class GlobalConfig(BaseModel):
     effect.
     """
 
-    default_model: Optional[str] = None
-    max_turns: Optional[int] = None
-    max_cost: Optional[float] = None
+    default_model: str | None = None
+    max_turns: int | None = None
+    max_cost: float | None = None
 
 
 def load_global_config() -> GlobalConfig:
@@ -41,5 +40,5 @@ def load_global_config() -> GlobalConfig:
         data = tomllib.loads(config_file.read_text())
         return GlobalConfig(**data)
     except Exception as e:
-        warnings.warn(f"Could not parse config.toml: {e}")
+        warnings.warn(f"Could not parse config.toml: {e}", stacklevel=2)
         return GlobalConfig()

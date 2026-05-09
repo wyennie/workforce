@@ -235,7 +235,7 @@ def search(
             f"could not reach the marketplace ({exc}). "
             "Check your internet connection or try again later."
         )
-        raise typer.Exit()
+        raise typer.Exit() from None
 
     try:
         entries: list[dict] = json.loads(content.decode())

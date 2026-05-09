@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 import typer
-from click import ParameterSource
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
@@ -27,25 +26,28 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from click import ParameterSource
 from rich import box
 from rich.panel import Panel
 from rich.table import Table
 
 from workforce import (
     github as github_mod,
+)
+from workforce import (
     manager,
     mission,
     output,
     parallel,
     paths,
 )
-from workforce.config import load_global_config
 from workforce import (
     project as project_mod,
 )
 from workforce import (
     specialist as specialist_mod,
 )
+from workforce.config import load_global_config
 from workforce.manager import (
     Decomposition,
     DecompositionKind,
@@ -69,25 +71,23 @@ from workforce.worktree import (
 )
 
 from . import panels as panels_mod
-from ._completions import complete_project, complete_specialist
 from ._common import (
     _PARALLEL_STATUS_BADGES,
     _PARALLEL_STATUS_STYLES,
     _STATUS_BADGES,
     _STATUS_STYLES,
     _make_renderer,
-    _relative_time,
     _stores,
     _summarize_tool_args,
     _truncate,
 )
+from ._completions import complete_project, complete_specialist
 from .merge import (
     _print_merge_plan,
     _print_ownership_audit,
     _run_auto_merge_parallel,
     _run_auto_merge_single,
 )
-
 
 # ----- Ticket resolution helpers ---------------------------------------------
 
@@ -595,7 +595,6 @@ def dispatch_command(
     roster_store, project_store, worktree_manager = _stores()
 
     # Apply global-config defaults for flags the user did not explicitly pass.
-    from click import ParameterSource
 
     _gcfg = load_global_config()
     if ctx.get_parameter_source("max_turns") is ParameterSource.DEFAULT and _gcfg.max_turns is not None:

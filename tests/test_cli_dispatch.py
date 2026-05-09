@@ -3,22 +3,19 @@ _read_ticket, and _onboard_specialist."""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from workforce import project as project_mod
 from workforce.cli.dispatch import (
-    ConfirmDecision,
     _confirm_decomposition,
     _dispatch_detached,
     _onboard_specialist,
     _read_ticket,
 )
-from workforce import project as project_mod
 from workforce.manager import Decomposition, DecompositionKind, Task
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -474,7 +471,7 @@ def test_onboard_hire_from_template_interactive() -> None:
 
     with patch("typer.prompt", return_value="backend"):
         with patch("workforce.output.success"):
-            result = _onboard_specialist("alice", proj, roster, proj_store, skip_prompts=False)
+            _onboard_specialist("alice", proj, roster, proj_store, skip_prompts=False)
 
     roster.save.assert_called_once()
     # assigned check: alice is in assigned list, so no proj_store.save needed

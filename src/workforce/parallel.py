@@ -45,7 +45,7 @@ from workforce.specialist import (
     Specialist,
 )
 from workforce.utils import _atomic_write
-from workforce.worktree import WorktreeManager, current_branch, is_clean
+from workforce.worktree import WorktreeManager, is_clean
 
 SCHEMA_VERSION = 1
 

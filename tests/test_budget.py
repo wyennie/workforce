@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from workforce.budget import BudgetCheckResult, _sum_monthly_cost, check_budget
 from workforce.project import Project
-
 
 # ---------------------------------------------------------------------------
 # Helpers
