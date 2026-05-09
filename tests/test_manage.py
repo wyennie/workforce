@@ -2,13 +2,14 @@
 
 The interactive loop itself is awkward to test (it's a streaming SDK session
 plus stdin), so we focus on the testable units: prompt building, message
-rendering, tool summarization. The CLI integration is exercised by a smoke
-test that invokes `workforce manage --help`.
+rendering, tool summarization, and content-payload construction. The CLI
+integration is exercised by a smoke test that invokes `workforce manage --help`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from workforce.cli import manage
+from workforce.cli.manage import _build_user_content
 from workforce.project import Project
 from workforce.specialist import RosterStore, Specialist
 
@@ -179,3 +181,72 @@ def test_run_manager_chat_sdk_error_does_not_hang(
                 )
 
     assert rc == 0
+
+
+# ----- _build_user_content: content payload construction -------------------
+
+
+_FAKE_PNG = b"\x89PNG" + b"\x00" * 64  # minimal stub — not a valid PNG but fine for tests
+
+
+class TestBuildUserContent:
+    def test_plain_text_when_no_images(self) -> None:
+        result = _build_user_content("hello world", [])
+        assert result == "hello world"
+
+    def test_list_form_with_image_and_text(self) -> None:
+        result = _build_user_content("describe this", [(_FAKE_PNG, "image/png")])
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+        img_block = result[0]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "base64"
+        assert img_block["source"]["media_type"] == "image/png"
+        assert base64.b64decode(img_block["source"]["data"]) == _FAKE_PNG
+
+        text_block = result[1]
+        assert text_block["type"] == "text"
+        assert text_block["text"] == "describe this"
+
+    def test_list_form_image_only_when_text_empty(self) -> None:
+        result = _build_user_content("", [(_FAKE_PNG, "image/png")])
+
+        assert isinstance(result, list)
+        assert len(result) == 1  # only image block — no empty text block
+        assert result[0]["type"] == "image"
+
+    def test_multiple_images_all_included(self) -> None:
+        img_a = b"\x89PNG" + b"\xAA" * 32
+        img_b = b"\x89PNG" + b"\xBB" * 32
+        result = _build_user_content("two images", [(img_a, "image/png"), (img_b, "image/png")])
+
+        assert isinstance(result, list)
+        assert len(result) == 3  # img_a, img_b, text
+
+        assert result[0]["type"] == "image"
+        assert base64.b64decode(result[0]["source"]["data"]) == img_a
+
+        assert result[1]["type"] == "image"
+        assert base64.b64decode(result[1]["source"]["data"]) == img_b
+
+        assert result[2]["type"] == "text"
+        assert result[2]["text"] == "two images"
+
+    def test_images_precede_text_block(self) -> None:
+        """Image blocks always come before the text block per Anthropic convention."""
+        result = _build_user_content("caption", [(_FAKE_PNG, "image/png")])
+
+        assert isinstance(result, list)
+        types = [block["type"] for block in result]
+        assert types == ["image", "text"]
+
+    def test_base64_encoding_is_correct(self) -> None:
+        payload = b"BINARY_DATA_TEST"
+        result = _build_user_content("check", [(payload, "image/png")])
+
+        assert isinstance(result, list)
+        encoded = result[0]["source"]["data"]
+        assert isinstance(encoded, str)
+        assert base64.b64decode(encoded) == payload

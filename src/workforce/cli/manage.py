@@ -15,6 +15,7 @@ project state on disk.
 from __future__ import annotations
 
 import asyncio
+import base64
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
 
 from rich.live import Live
 from rich.markdown import Markdown
@@ -243,7 +245,8 @@ def _render_session_banner(
         padding=(0, 1),
     ))
     output.info(
-        "[dim]  /exit or Ctrl-D to leave  ·  blank line submits multi-line drafts[/dim]"
+        "[dim]  /exit or Ctrl-D to leave  ·  blank line submits multi-line drafts"
+        "  ·  Ctrl+V to attach clipboard image[/dim]"
     )
 
 
@@ -425,6 +428,45 @@ def _summarize_tool(name: str, args: dict[str, Any]) -> str:
     return ""
 
 
+# Maximum unencoded image size accepted by the Anthropic API (≈ 5 MB raw PNG).
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _build_user_content(
+    text: str,
+    images: list[tuple[bytes, str]],
+) -> "str | list[dict[str, Any]]":
+    """Build the content payload for a user SDK message.
+
+    Args:
+        text: The typed user message (may be empty when images are the
+            entire message).
+        images: List of ``(raw_bytes, media_type)`` pairs gathered from
+            the clipboard. If empty, returns *text* unchanged (a plain
+            string, which the SDK treats as a text-only message).
+
+    Returns:
+        A plain string when *images* is empty, or a list of Anthropic
+        content blocks (image blocks first, then a text block when *text*
+        is non-empty) when images are present.
+    """
+    if not images:
+        return text
+    content: list[dict[str, Any]] = []
+    for img_bytes, media_type in images:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64.b64encode(img_bytes).decode(),
+            },
+        })
+    if text:
+        content.append({"type": "text", "text": text})
+    return content
+
+
 async def run_manager_chat(
     project: Project,
     roster_store: RosterStore,
@@ -479,8 +521,78 @@ async def run_manager_chat(
     turn_done = asyncio.Event()
     turn_done.set()  # ready for first user input
     stop = asyncio.Event()
-    _session: PromptSession[str] = PromptSession()
     _spinner = _SpinnerState()
+
+    # Images attached via Ctrl+Shift+V; flushed with the next submitted turn.
+    _pending_images: list[tuple[bytes, str]] = []
+
+    # ----- key bindings -------------------------------------------------------
+
+    _kb = KeyBindings()
+
+    @_kb.add("c-v")  # Ctrl+V — smart paste: image → attach, text → do nothing.
+    # Note: prompt_toolkit's Keys enum only has `c-v` for letter+Ctrl combos;
+    # there is no `c-s-v` (Ctrl+Shift+V) for ordinary letters. In terminals
+    # such as gnome-terminal, Ctrl+Shift+V is intercepted at the terminal
+    # emulator level and converted to a bracketed-paste sequence that is never
+    # forwarded to the application — text paste therefore continues to work
+    # naturally. This handler fires on Ctrl+V and is "smart": if the clipboard
+    # holds an image it attaches it; if not it silently returns so normal
+    # quoted-insert behaviour (or terminal-level paste) is unaffected.
+    def _kb_paste_image(event: Any) -> None:
+        """Grab a clipboard image and queue it for the next send.
+
+        If the clipboard holds no image (text, empty, or unsupported backend)
+        this handler silently returns so the terminal can handle text paste
+        natively via bracketed paste without interference.
+        """
+        from prompt_toolkit.application import run_in_terminal
+        from workforce.cli._clipboard import grab_clipboard_image
+
+        result = grab_clipboard_image()
+        if result is None:
+            # No image — pass through; bracketed paste handles text natively.
+            return
+
+        raw, media_type = result
+        if len(raw) > _MAX_IMAGE_BYTES:
+            size_kb = len(raw) // 1024
+
+            def _warn_size() -> None:
+                output.warn(
+                    f"clipboard image is too large "
+                    f"({size_kb} KB > {_MAX_IMAGE_BYTES // 1024} KB limit) "
+                    "— not attached."
+                )
+
+            run_in_terminal(_warn_size)
+            return
+
+        _pending_images.append((raw, media_type))
+        n = len(_pending_images)
+
+        def _confirm() -> None:
+            output.info(
+                f"[dim]📎 image attached ({len(raw) // 1024} KB) — "
+                f"{n} total, press Enter to send.[/dim]"
+            )
+
+        run_in_terminal(_confirm)
+
+    # ----- bottom toolbar -----------------------------------------------------
+
+    def _toolbar() -> str:
+        n = len(_pending_images)
+        if n == 0:
+            return ""
+        return f"📎 {n} image(s) attached — press Enter to send"
+
+    # -----------------------------------------------------------------------
+
+    _session: PromptSession[str] = PromptSession(
+        key_bindings=_kb,
+        bottom_toolbar=_toolbar,
+    )
 
     async def feed() -> AsyncIterator[dict[str, Any]]:
         while True:
@@ -488,10 +600,15 @@ async def run_manager_chat(
             if text is None:
                 return
             turn_done.clear()
+            # Build content: list form when images are pending, plain string
+            # when this is a text-only turn.
+            images = list(_pending_images)
+            _pending_images.clear()
+            content = _build_user_content(text, images)
             yield {
                 "type": "user",
                 "session_id": "",
-                "message": {"role": "user", "content": text},
+                "message": {"role": "user", "content": content},
                 "parent_tool_use_id": None,
             }
 
@@ -600,4 +717,4 @@ def manage_command_main(
         return 130
 
 
-__all__ = ["run_manager_chat", "manage_command_main"]
+__all__ = ["run_manager_chat", "manage_command_main", "_build_user_content"]

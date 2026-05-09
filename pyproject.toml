@@ -40,6 +40,9 @@ webhook = [
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
 ]
+images = [
+    "Pillow>=10.0",
+]
 
 [project.scripts]
 workforce = "workforce.cli:app"
