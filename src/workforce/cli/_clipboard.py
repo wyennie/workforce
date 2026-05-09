@@ -71,10 +71,7 @@ def _try_pillow() -> tuple[bytes, str] | None:
     # On Linux, ImageGrab.grabclipboard() may return a list of file paths
     # instead of an Image object when clipboard contains file references.
     # We only handle actual image objects.
-    try:
-        if not isinstance(grabbed, Image.Image):
-            return None
-    except Exception:
+    if not isinstance(grabbed, Image.Image):
         return None
 
     try:
@@ -97,7 +94,7 @@ def _try_subprocess(cmd: list[str]) -> tuple[bytes, str] | None:
             capture_output=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, PermissionError):
+    except (OSError, subprocess.TimeoutExpired):
         return None
 
     if result.returncode != 0 or not result.stdout:

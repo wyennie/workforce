@@ -430,12 +430,14 @@ def _summarize_tool(name: str, args: dict[str, Any]) -> str:
 
 # Maximum unencoded image size accepted by the Anthropic API (≈ 5 MB raw PNG).
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
+# Soft-warning threshold: images above this are attached but the user is warned.
+_WARN_IMAGE_BYTES = 4 * 1024 * 1024
 
 
 def _build_user_content(
     text: str,
     images: list[tuple[bytes, str]],
-) -> "str | list[dict[str, Any]]":
+) -> str | list[dict[str, Any]]:
     """Build the content payload for a user SDK message.
 
     Args:
@@ -530,28 +532,30 @@ async def run_manager_chat(
 
     _kb = KeyBindings()
 
-    @_kb.add("c-v")  # Ctrl+V — smart paste: image → attach, text → do nothing.
+    @_kb.add("c-v")  # Ctrl+V — smart paste: image → attach, text → quoted-insert.
     # Note: prompt_toolkit's Keys enum only has `c-v` for letter+Ctrl combos;
     # there is no `c-s-v` (Ctrl+Shift+V) for ordinary letters. In terminals
     # such as gnome-terminal, Ctrl+Shift+V is intercepted at the terminal
     # emulator level and converted to a bracketed-paste sequence that is never
     # forwarded to the application — text paste therefore continues to work
     # naturally. This handler fires on Ctrl+V and is "smart": if the clipboard
-    # holds an image it attaches it; if not it silently returns so normal
-    # quoted-insert behaviour (or terminal-level paste) is unaffected.
+    # holds an image it attaches it; if not it restores the default
+    # quoted-insert behaviour explicitly before returning.
     def _kb_paste_image(event: Any) -> None:
         """Grab a clipboard image and queue it for the next send.
 
         If the clipboard holds no image (text, empty, or unsupported backend)
-        this handler silently returns so the terminal can handle text paste
-        natively via bracketed paste without interference.
+        this handler restores the default quoted-insert behaviour so the user
+        can still type literal control characters via Ctrl+V + <char>.
         """
         from prompt_toolkit.application import run_in_terminal
         from workforce.cli._clipboard import grab_clipboard_image
 
         result = grab_clipboard_image()
         if result is None:
-            # No image — pass through; bracketed paste handles text natively.
+            # No image — restore default quoted-insert so Ctrl+V keeps working
+            # for its normal purpose of inserting a literal control character.
+            event.app.current_buffer.quoted_insert()
             return
 
         raw, media_type = result
@@ -561,12 +565,22 @@ async def run_manager_chat(
             def _warn_size() -> None:
                 output.warn(
                     f"clipboard image is too large "
-                    f"({size_kb} KB > {_MAX_IMAGE_BYTES // 1024} KB limit) "
+                    f"({size_kb} KB > {_MAX_IMAGE_BYTES // (1024 * 1024)} MB limit) "
                     "— not attached."
                 )
 
             run_in_terminal(_warn_size)
             return
+
+        if len(raw) > _WARN_IMAGE_BYTES:
+            size_mb = len(raw) / (1024 * 1024)
+
+            def _warn_large() -> None:
+                output.warn(
+                    f"clipboard image is large ({size_mb:.1f} MB) — attaching anyway."
+                )
+
+            run_in_terminal(_warn_large)
 
         _pending_images.append((raw, media_type))
         n = len(_pending_images)
@@ -717,4 +731,4 @@ def manage_command_main(
         return 130
 
 
-__all__ = ["run_manager_chat", "manage_command_main", "_build_user_content"]
+__all__ = ["run_manager_chat", "manage_command_main"]
