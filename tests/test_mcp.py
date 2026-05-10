@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_success():
+def test_dispatch_success() -> None:
     """Returns parsed JSON on exit-code 0."""
     from workforce.mcp.tools import workforce_dispatch
 
@@ -38,7 +38,7 @@ def test_dispatch_success():
     assert "--ci" in args
 
 
-def test_dispatch_with_specialist_and_auto_merge():
+def test_dispatch_with_specialist_and_auto_merge() -> None:
     """Passes --specialist and --auto-merge flags when specified."""
     from workforce.mcp.tools import workforce_dispatch
 
@@ -55,7 +55,7 @@ def test_dispatch_with_specialist_and_auto_merge():
     assert "--auto-merge" in cmd
 
 
-def test_dispatch_failure_returns_error():
+def test_dispatch_failure_returns_error() -> None:
     """Returns {'error': stderr} when the subprocess exits non-zero."""
     from workforce.mcp.tools import workforce_dispatch
 
@@ -72,7 +72,7 @@ def test_dispatch_failure_returns_error():
 # ---------------------------------------------------------------------------
 
 
-def test_mission_status_found():
+def test_mission_status_found() -> None:
     """Returns parsed meta dict when mission exists under a project."""
     from workforce.mcp.tools import workforce_mission_status
 
@@ -100,7 +100,7 @@ def test_mission_status_found():
     assert result == meta
 
 
-def test_mission_status_not_found():
+def test_mission_status_not_found() -> None:
     """Returns error dict when mission is not found in any project."""
     from workforce.mcp.tools import workforce_mission_status
 
@@ -130,7 +130,7 @@ def test_mission_status_not_found():
 # ---------------------------------------------------------------------------
 
 
-def test_roster_returns_specialist_summaries():
+def test_roster_returns_specialist_summaries() -> None:
     """Returns one dict per specialist with name, role, missions, cost_usd."""
     from workforce.mcp.tools import workforce_roster
 
@@ -160,7 +160,7 @@ def test_roster_returns_specialist_summaries():
     ]
 
 
-def test_roster_empty():
+def test_roster_empty() -> None:
     """Returns empty list when roster is empty."""
     from workforce.mcp.tools import workforce_roster
 
@@ -178,7 +178,7 @@ def test_roster_empty():
 # ---------------------------------------------------------------------------
 
 
-def test_mission_result_found():
+def test_mission_result_found() -> None:
     """Returns result.md text when the file exists."""
     from workforce.mcp.tools import workforce_mission_result
 
@@ -208,7 +208,7 @@ def test_mission_result_found():
     assert result == result_text
 
 
-def test_mission_result_not_found():
+def test_mission_result_not_found() -> None:
     """Returns error string when result.md is not found."""
     from workforce.mcp.tools import workforce_mission_result
 

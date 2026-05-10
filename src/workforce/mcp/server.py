@@ -19,6 +19,7 @@ except ImportError:
     raise SystemExit(1) from None
 
 import json
+from typing import Any
 
 from workforce.mcp.tools import (
     workforce_dispatch,
@@ -30,7 +31,7 @@ from workforce.mcp.tools import (
 server = Server("workforce")
 
 
-@server.list_tools()
+@server.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_tools() -> list[Tool]:
     """Advertise the four workforce tools to the MCP client."""
     return [
@@ -102,21 +103,21 @@ async def list_tools() -> list[Tool]:
     ]
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+@server.call_tool()  # type: ignore[untyped-decorator]
+async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Dispatch the named tool and return the result as TextContent."""
     if name == "workforce_dispatch":
-        result = workforce_dispatch(**arguments)
-        return [TextContent(type="text", text=json.dumps(result))]
+        dispatch_result = workforce_dispatch(**arguments)
+        return [TextContent(type="text", text=json.dumps(dispatch_result))]
     if name == "workforce_mission_status":
-        result = workforce_mission_status(**arguments)
-        return [TextContent(type="text", text=json.dumps(result))]
+        status_result = workforce_mission_status(**arguments)
+        return [TextContent(type="text", text=json.dumps(status_result))]
     if name == "workforce_roster":
-        result = workforce_roster()
-        return [TextContent(type="text", text=json.dumps(result))]
+        roster_result = workforce_roster()
+        return [TextContent(type="text", text=json.dumps(roster_result))]
     if name == "workforce_mission_result":
-        result = workforce_mission_result(**arguments)
-        return [TextContent(type="text", text=result)]
+        mission_result = workforce_mission_result(**arguments)
+        return [TextContent(type="text", text=mission_result)]
     raise ValueError(f"Unknown tool: {name}")
 
 
