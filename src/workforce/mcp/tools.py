@@ -10,6 +10,7 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 
 def workforce_dispatch(
@@ -17,7 +18,7 @@ def workforce_dispatch(
     ticket: str,
     specialist: str | None = None,
     auto_merge: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Dispatch a mission and return the CI result dict.
 
     Args:
@@ -49,11 +50,11 @@ def workforce_dispatch(
         ticket_path.unlink(missing_ok=True)
 
     if result.returncode == 0:
-        return json.loads(result.stdout)
+        return cast(dict[str, Any], json.loads(result.stdout))
     return {"error": result.stderr}
 
 
-def workforce_mission_status(mission_id: str) -> dict:
+def workforce_mission_status(mission_id: str) -> dict[str, Any]:
     """Return the meta.json dict for *mission_id*, or an error dict.
 
     Args:
@@ -69,11 +70,11 @@ def workforce_mission_status(mission_id: str) -> dict:
     for proj in store.list():
         meta_path = m.mission_paths(proj.id, mission_id).meta
         if meta_path.exists():
-            return json.loads(meta_path.read_text())
+            return cast(dict[str, Any], json.loads(meta_path.read_text()))
     return {"error": f"mission {mission_id} not found"}
 
 
-def workforce_roster() -> list:
+def workforce_roster() -> list[dict[str, Any]]:
     """Return a list of specialist summary dicts.
 
     Each dict has keys: ``name``, ``role``, ``missions`` (total runs),
