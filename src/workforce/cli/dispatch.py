@@ -176,7 +176,7 @@ def _read_ticket_from_editor() -> str:
 # ----- CI summary helpers ----------------------------------------------------
 
 
-def _ci_summary_single(meta: MissionMeta) -> dict:
+def _ci_summary_single(meta: MissionMeta) -> dict[str, object]:
     """Build the CI JSON summary dict from a completed single MissionMeta."""
     return {
         "mission_id": meta.mission_id,
@@ -192,7 +192,7 @@ def _ci_summary_single(meta: MissionMeta) -> dict:
 def _ci_summary_parallel(
     parent: ParallelMissionMeta,
     subs: list[MissionMeta],
-) -> dict:
+) -> dict[str, object]:
     """Build the CI JSON summary dict from a parallel mission result."""
     total_cost = parent.manager_cost_usd + sum(
         m.cost_usd + m.review_cost_usd for m in subs
@@ -207,7 +207,7 @@ def _ci_summary_parallel(
     }
 
 
-def _write_ci_summary(summary: dict, output_file: Path | None) -> None:
+def _write_ci_summary(summary: dict[str, object], output_file: Path | None) -> None:
     """Print the CI JSON summary to stdout and optionally to a file."""
     text = json.dumps(summary)
     print(text, flush=True)

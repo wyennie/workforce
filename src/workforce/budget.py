@@ -1,14 +1,14 @@
 """Project budget checking.
 
 Scans the current month's mission artifacts and compares their cost against
-per-project budget limits set in ProjectConfig (a.k.a. Project).
+per-project budget limits set in the Project model.
 
 Usage::
 
     from workforce.budget import check_budget
     from workforce.project import Project
 
-    result = check_budget(project_id, project_config)
+    result = check_budget(project_id, project)
     if not result.allowed:
         output.die(f"budget: {result.reason}")
     if result.warning:
@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from workforce import paths
-from workforce.project import ProjectConfig
+from workforce.project import Project
 
 
 class BudgetCheckResult(NamedTuple):
@@ -47,7 +47,7 @@ class BudgetCheckResult(NamedTuple):
 
 def check_budget(
     project_id: str,
-    project_config: ProjectConfig,
+    project_config: Project,
     new_cost_estimate: float = 0.0,
 ) -> BudgetCheckResult:
     """Check whether a new mission can proceed given the project's budget limits.
@@ -136,7 +136,7 @@ def _sum_monthly_cost(project_id: str) -> float:
         if not meta_path.is_file():
             continue
         try:
-            data: dict = json.loads(meta_path.read_text(encoding="utf-8"))
+            data: dict[str, object] = json.loads(meta_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -150,10 +150,12 @@ def _sum_monthly_cost(project_id: str) -> float:
             continue
 
         started_at = data.get("started_at", "")
+        if not isinstance(started_at, str):
+            continue
         try:
             # meta.json timestamps use "Z" suffix (not "+00:00")
             started = dt.datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
+        except ValueError:
             continue
 
         if (started.year, started.month) != current_year_month:
