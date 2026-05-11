@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 from .config import ProjectMapping, WebhookConfig
 
@@ -83,7 +84,7 @@ def _run_dispatch(
         # {"mission_id": "abc123", "status": "completed", ...}
         try:
             data = json.loads(result.stdout)
-            return data.get("mission_id")
+            return cast("str | None", data.get("mission_id"))
         except json.JSONDecodeError:
             logger.error(
                 "workforce dispatch output was not valid JSON: %r",
@@ -100,7 +101,7 @@ def _run_dispatch(
         ticket_path.unlink(missing_ok=True)
 
 
-async def handle_issues(event: dict, config: WebhookConfig) -> str | None:
+async def handle_issues(event: dict[str, Any], config: WebhookConfig) -> str | None:
     """Handle a ``issues`` webhook event.
 
     Dispatches a mission when the issue is labeled with ``config.dispatch_label``.
@@ -149,7 +150,7 @@ async def handle_issues(event: dict, config: WebhookConfig) -> str | None:
     return _run_dispatch(mapping, ticket)
 
 
-async def handle_pull_request(event: dict, config: WebhookConfig) -> str | None:
+async def handle_pull_request(event: dict[str, Any], config: WebhookConfig) -> str | None:
     """Handle a ``pull_request`` webhook event.
 
     Dispatches a reviewer mission when a PR is opened and ``config.auto_review``

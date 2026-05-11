@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from collections.abc import AsyncGenerator
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 try:
     from fastapi import FastAPI, Request
@@ -243,7 +244,7 @@ def _is_result_message(data: dict[str, Any]) -> bool:
     return data.get("_type") == "ResultMessage"
 
 
-async def _sse_generator(mission_id: str):  # type: ignore[return]
+async def _sse_generator(mission_id: str) -> AsyncGenerator[str, None]:
     """Async generator yielding SSE-formatted lines from the events.jsonl file.
 
     Scans all project mission directories to locate the events file.  Streams
@@ -276,7 +277,7 @@ async def _sse_generator(mission_id: str):  # type: ignore[return]
             return True  # No meta.json at all — mission hasn't started its stub yet
         try:
             data = json.loads(meta_path.read_text(encoding="utf-8"))
-            return data.get("status") == "running"
+            return bool(data.get("status") == "running")
         except Exception:
             return False  # Unreadable meta → treat as done
 
@@ -350,12 +351,12 @@ async def stats_page(request: Request) -> HTMLResponse:
         except (ValueError, IndexError):
             pass
 
-    last_30 = [
+    last_30: list[dict[str, Any]] = [
         {"date": (today - timedelta(days=i)).isoformat(), "count": 0}
         for i in range(30, -1, -1)
     ]
     for entry in last_30:
-        entry["count"] = day_counts.get(entry["date"], 0)
+        entry["count"] = day_counts.get(cast(str, entry["date"]), 0)
 
     return templates.TemplateResponse(
         request,

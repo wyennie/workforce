@@ -101,7 +101,7 @@ def create_app(config_path: Path | None = None) -> Any:
 
         event_type = x_github_event or "unknown"
         try:
-            event: dict = json.loads(payload)
+            event: dict[str, Any] = json.loads(payload)
         except json.JSONDecodeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -127,7 +127,7 @@ def create_app(config_path: Path | None = None) -> Any:
     return app
 
 
-async def _dispatch_issues(event: dict, config: WebhookConfig) -> None:
+async def _dispatch_issues(event: dict[str, Any], config: WebhookConfig) -> None:
     """Background task wrapper for handle_issues."""
     try:
         mission_id = await handle_issues(event, config)
@@ -137,7 +137,7 @@ async def _dispatch_issues(event: dict, config: WebhookConfig) -> None:
         logger.exception("error in issues handler")
 
 
-async def _dispatch_pull_request(event: dict, config: WebhookConfig) -> None:
+async def _dispatch_pull_request(event: dict[str, Any], config: WebhookConfig) -> None:
     """Background task wrapper for handle_pull_request."""
     try:
         mission_id = await handle_pull_request(event, config)
