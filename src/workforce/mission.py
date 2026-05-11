@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import types
 
+_fcntl: types.ModuleType | None
 try:
     import fcntl as _fcntl
 except ImportError:
