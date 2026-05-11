@@ -7,6 +7,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any, cast
 
 import typer
 from rich.table import Table
@@ -48,7 +49,7 @@ def _fetch(url: str) -> bytes:
     """
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310
-            return resp.read()
+            return cast(bytes, resp.read())
     except urllib.error.URLError as exc:
         raise _FetchError(f"could not reach {url}: {exc}") from exc
 
@@ -238,7 +239,7 @@ def search(
         raise typer.Exit() from None
 
     try:
-        entries: list[dict] = json.loads(content.decode())
+        entries: list[dict[str, Any]] = json.loads(content.decode())
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         output.die(f"invalid index from registry: {exc}")
 

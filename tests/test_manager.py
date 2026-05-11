@@ -416,7 +416,7 @@ async def _raising_query(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
     """Fake query() that raises RuntimeError before yielding anything."""
     raise RuntimeError("boom")
     # Make this an async generator by adding an unreachable yield.
-    yield  # type: ignore[misc]  # pragma: no cover
+    yield  # pragma: no cover
 
 
 def test_run_manager_wraps_non_timeout_exception(tmp_path: Path) -> None:

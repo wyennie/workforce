@@ -66,7 +66,7 @@ def start(
     and ``webhook stop`` can manage it.
     """
     try:
-        import uvicorn  # type: ignore[import-untyped]
+        import uvicorn
     except ImportError:
         output.die(
             "uvicorn is not installed. "
