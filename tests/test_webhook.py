@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -92,7 +93,7 @@ def _make_issue_event(
     title: str = "Fix the bug",
     body: str = "Something is broken.",
     number: int = 42,
-) -> dict:
+) -> dict[str, Any]:
     return {
         "action": action,
         "label": {"name": label},
@@ -196,7 +197,7 @@ def _make_pr_event(
     number: int = 7,
     title: str = "Add feature X",
     body: str = "Implements X.",
-) -> dict:
+) -> dict[str, Any]:
     return {
         "action": action,
         "repository": {"full_name": repo},
