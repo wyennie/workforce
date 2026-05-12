@@ -90,7 +90,7 @@ def _execute_auto_merge(
             output.fail(f"auto-merge preflight failed: {e}")
             return
     else:
-        cur = parallel._current_branch(repo) or "HEAD"
+        cur = getattr(parallel, "_current_branch")(repo) or "HEAD"
         output.info(f"merging into current branch ({cur}) of {proj.repo_path}...")
         results = parallel.auto_merge(repo, plan)
 

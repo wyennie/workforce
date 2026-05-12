@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Literal, cast
 
 import typer
 from rich.table import Table
@@ -199,7 +200,7 @@ def init_command(
             id=project_id,
             name=display_name,
             repo_path=str(repo_path),
-            kind=kind,
+            kind=cast(Literal["repo", "workspace"], kind),
         )
     except ValueError as e:
         output.die(str(e))

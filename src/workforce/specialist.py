@@ -14,6 +14,9 @@ Storage layout:
 
 from __future__ import annotations
 
+import types
+
+_fcntl: types.ModuleType | None
 try:
     import fcntl as _fcntl
 except ImportError:
