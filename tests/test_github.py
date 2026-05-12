@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -80,7 +81,7 @@ class TestFetchIssue:
         self,
         title: str = "Test issue",
         body: str = "Issue body",
-        comments: list[dict] | None = None,
+        comments: list[dict[str, Any]] | None = None,
     ) -> str:
         return json.dumps(
             {"title": title, "body": body, "comments": comments or []}

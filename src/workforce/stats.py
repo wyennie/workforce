@@ -14,7 +14,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from workforce import paths
 from workforce.mission import MissionStatus
@@ -153,7 +153,7 @@ def _load_mission_record(meta_path: Path) -> _MissionRecord | None:
     )
 
 
-def _load_cache() -> tuple[list[dict], list[_MissionRecord]] | None:
+def _load_cache() -> tuple[list[dict[str, Any]], list[_MissionRecord]] | None:
     """Load the cache from disk.
 
     Returns:
@@ -172,7 +172,7 @@ def _load_cache() -> tuple[list[dict], list[_MissionRecord]] | None:
         return None
 
 
-def _save_cache(files: list[dict], missions: list[_MissionRecord]) -> None:
+def _save_cache(files: list[dict[str, Any]], missions: list[_MissionRecord]) -> None:
     """Atomically write the stats cache to disk.
 
     Args:
@@ -203,7 +203,7 @@ def _get_missions_with_cache() -> list[_MissionRecord]:
     """
     meta_paths = _collect_meta_paths()
 
-    current_files: list[dict] = []
+    current_files: list[dict[str, Any]] = []
     for p in meta_paths:
         try:
             mtime = p.stat().st_mtime
@@ -285,9 +285,9 @@ def query_stats(since_date: str | None = None) -> StatsResult:
     filtered_count = len(missions)
 
     # Per-specialist accumulator.
-    spec_acc: dict[str, dict] = {}
+    spec_acc: dict[str, dict[str, Any]] = {}
     # Per-project accumulator.
-    proj_acc: dict[str, dict] = {}
+    proj_acc: dict[str, dict[str, Any]] = {}
 
     total_missions = 0
     total_cost = 0.0

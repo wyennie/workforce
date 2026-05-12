@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # URL parsing
@@ -133,7 +134,7 @@ def fetch_issue(url: str) -> str:
     data = json.loads(raw)
     title: str = data.get("title", "")
     body: str = data.get("body", "") or ""
-    comments: list[dict] = data.get("comments", []) or []
+    comments: list[dict[str, Any]] = data.get("comments", []) or []
 
     parts = [f"## {title}", "", body.strip()]
 
