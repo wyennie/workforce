@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from workforce.cli._completions import (
@@ -70,7 +71,7 @@ class TestCompleteSpecialist:
 
 
 class TestCompleteMissionId:
-    def test_returns_matching_ids(self, tmp_path) -> None:
+    def test_returns_matching_ids(self, tmp_path: Path) -> None:
         proj = MagicMock()
         proj.id = "proj1"
 
@@ -89,7 +90,7 @@ class TestCompleteMissionId:
 
         assert sorted(result) == ["m-abc123", "m-abc456"]
 
-    def test_returns_empty_when_no_missions_dir(self, tmp_path) -> None:
+    def test_returns_empty_when_no_missions_dir(self, tmp_path: Path) -> None:
         proj = MagicMock()
         proj.id = "proj1"
 
