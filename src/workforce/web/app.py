@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import Any, cast
 
 try:
-    from fastapi import FastAPI, Request  # type: ignore[import-not-found]
-    from fastapi.responses import HTMLResponse, StreamingResponse  # type: ignore[import-not-found]
-    from fastapi.templating import Jinja2Templates  # type: ignore[import-not-found]
+    from fastapi import FastAPI, Request
+    from fastapi.responses import HTMLResponse, StreamingResponse
+    from fastapi.templating import Jinja2Templates
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "workforce[web] extras required: pip install 'workforce[web]'"
@@ -118,7 +118,7 @@ def _highlight_diff(diff_text: str) -> list[tuple[str, str]]:
 # ── routes ───────────────────────────────────────────────────────────────────
 
 
-@app.get("/", response_class=HTMLResponse)  # type: ignore[untyped-decorator]
+@app.get("/", response_class=HTMLResponse)
 async def mission_list(
     request: Request,
     project: str = "",
@@ -161,7 +161,7 @@ async def mission_list(
     )
 
 
-@app.get("/mission/{mission_id}", response_class=HTMLResponse)  # type: ignore[untyped-decorator]
+@app.get("/mission/{mission_id}", response_class=HTMLResponse)
 async def mission_detail(request: Request, mission_id: str) -> HTMLResponse:
     """Mission detail page showing ticket, result, and meta fields."""
     all_missions = _load_all_missions()
@@ -186,7 +186,7 @@ async def mission_detail(request: Request, mission_id: str) -> HTMLResponse:
     )
 
 
-@app.get("/mission/{mission_id}/diff", response_class=HTMLResponse)  # type: ignore[untyped-decorator]
+@app.get("/mission/{mission_id}/diff", response_class=HTMLResponse)
 async def mission_diff(request: Request, mission_id: str) -> HTMLResponse:
     """Diff viewer: runs ``git diff {base_sha}..HEAD`` in the mission worktree."""
     all_missions = _load_all_missions()
@@ -307,7 +307,7 @@ async def _sse_generator(mission_id: str) -> AsyncGenerator[str, None]:
         pass
 
 
-@app.get("/mission/{mission_id}/events")  # type: ignore[untyped-decorator]
+@app.get("/mission/{mission_id}/events")
 async def mission_events(mission_id: str) -> StreamingResponse:
     """Server-Sent Events stream for a mission's events.jsonl."""
     return StreamingResponse(
@@ -317,7 +317,7 @@ async def mission_events(mission_id: str) -> StreamingResponse:
     )
 
 
-@app.get("/stats", response_class=HTMLResponse)  # type: ignore[untyped-decorator]
+@app.get("/stats", response_class=HTMLResponse)
 async def stats_page(request: Request) -> HTMLResponse:
     """Stats page: cost by specialist, missions per day, success rates."""
     missions = _load_all_missions()
@@ -371,7 +371,7 @@ async def stats_page(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/roster", response_class=HTMLResponse)  # type: ignore[untyped-decorator]
+@app.get("/roster", response_class=HTMLResponse)
 async def roster_page(request: Request) -> HTMLResponse:
     """Roster page: all specialists with mission counts and memory size."""
     rstore = RosterStore()

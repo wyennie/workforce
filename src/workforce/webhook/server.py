@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # FastAPI is an optional dependency ([webhook] extra). Import lazily so the
 # rest of the package is importable even without it installed.
 try:
-    from fastapi import (  # type: ignore[import-not-found]
+    from fastapi import (
         BackgroundTasks,
         FastAPI,
         Header,
@@ -36,7 +36,7 @@ try:
         Request,
         status,
     )
-    from fastapi.responses import JSONResponse  # type: ignore[import-not-found]
+    from fastapi.responses import JSONResponse
     _FASTAPI_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _FASTAPI_AVAILABLE = False
@@ -77,7 +77,7 @@ def create_app(config_path: Path | None = None) -> Any:
             _config = load_webhook_config(config_path)
         return _config
 
-    @app.post("/webhook", status_code=status.HTTP_200_OK)  # type: ignore[untyped-decorator]
+    @app.post("/webhook", status_code=status.HTTP_200_OK)
     async def webhook(
         request: Request,
         background_tasks: BackgroundTasks,
@@ -126,7 +126,7 @@ def create_app(config_path: Path | None = None) -> Any:
 
         return JSONResponse({"ok": True, "event": event_type})
 
-    @app.get("/health")  # type: ignore[untyped-decorator]
+    @app.get("/health")
     async def health() -> JSONResponse:
         """Health check endpoint."""
         return JSONResponse({"status": "ok"})
