@@ -28,7 +28,14 @@ logger = logging.getLogger(__name__)
 # FastAPI is an optional dependency ([webhook] extra). Import lazily so the
 # rest of the package is importable even without it installed.
 try:
-    from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, status  # type: ignore[import-not-found]
+    from fastapi import (  # type: ignore[import-not-found]
+        BackgroundTasks,
+        FastAPI,
+        Header,
+        HTTPException,
+        Request,
+        status,
+    )
     from fastapi.responses import JSONResponse  # type: ignore[import-not-found]
     _FASTAPI_AVAILABLE = True
 except ImportError:  # pragma: no cover

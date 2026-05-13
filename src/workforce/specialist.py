@@ -14,17 +14,11 @@ Storage layout:
 
 from __future__ import annotations
 
-import types
-
-_fcntl: types.ModuleType | None
-try:
-    import fcntl as _fcntl
-except ImportError:
-    _fcntl = None  # Windows — file locking not available
 import json
 import re
 import shutil
 import tomllib
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +26,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from workforce import paths
 from workforce.utils import _dump_toml
+
+_fcntl: types.ModuleType | None
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None  # Windows — file locking not available
 
 SCHEMA_VERSION = 1
 DEFAULT_MODEL = "claude-sonnet-4-6"

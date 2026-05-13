@@ -11,17 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import types
-
-_fcntl: types.ModuleType | None
-try:
-    import fcntl as _fcntl
-except ImportError:
-    _fcntl = None  # Windows - file locking not available
 import json
 import logging
 import secrets
 import subprocess
+import types
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -43,6 +37,12 @@ from workforce.runner import EventCallback, RunLimits, RunStatus
 from workforce.specialist import RosterStore, Specialist
 from workforce.utils import _FENCE_RE, _atomic_write
 from workforce.worktree import WorktreeManager
+
+_fcntl: types.ModuleType | None
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None  # Windows - file locking not available
 
 SCHEMA_VERSION = 1
 
