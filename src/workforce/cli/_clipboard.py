@@ -56,7 +56,7 @@ def _try_pillow() -> tuple[bytes, str] | None:
     Returns ``(bytes, "image/png")`` on success, ``None`` otherwise.
     """
     try:
-        from PIL import Image, ImageGrab  # type: ignore[import-not-found]
+        from PIL import Image, ImageGrab
     except ImportError:
         return None
 

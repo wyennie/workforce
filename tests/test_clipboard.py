@@ -123,7 +123,7 @@ class TestTryPillow:
     def test_returns_png_bytes_when_image_grabbed(self) -> None:
         # Build a real Pillow image (if available) to test the happy path.
         try:
-            from PIL import Image, ImageGrab  # type: ignore[import-not-found]  # noqa: F401
+            from PIL import Image, ImageGrab  # noqa: F401
         except ImportError:
             pytest.skip("Pillow not installed")
 

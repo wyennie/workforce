@@ -16,7 +16,7 @@ import pytest
 fastapi = pytest.importorskip("fastapi", reason="fastapi not installed")
 pytest.importorskip("httpx", reason="httpx not installed (needed for TestClient)")
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient  # type: ignore[import-not-found]  # noqa: E402
 
 from workforce.mission import MissionMeta, MissionPaths, MissionStatus  # noqa: E402
 from workforce.specialist import Specialist, SpecialistStats  # noqa: E402
